@@ -51,11 +51,22 @@ int main(void)
             log_pending = 1;
         }
 
+        buttons_task(&sample, has_sample);
+
         epd_render_task();
-        app_state_task();
-        if (log_pending) {
-            flash_log_sample(&pending_log_sample);
-            log_pending = 0;
+
+        buttons_task(&sample, has_sample);
+
+        if (!buttons_pending() && !epd_render_pending()) {
+            app_state_task();
+            if (log_pending) {
+                flash_log_sample(&pending_log_sample);
+                log_pending = 0;
+            }
+        }
+
+        if (buttons_pending()) {
+            continue;
         }
 
         if (epd_render_pending()) {

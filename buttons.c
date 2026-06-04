@@ -143,6 +143,7 @@ static void buttons_enter_settings(void)
 static void buttons_exit_settings(void)
 {
     g_button_mode = BUTTON_MODE_MAIN;
+    app_flush_settings();
     epd_resume_auto();
     sample_timer_force_due();
 }
@@ -265,6 +266,19 @@ void buttons_task(const TempSample *last_sample, uint8_t has_sample)
     if (events & BUTTON_EVENT_S4) {
         buttons_action_s4(last_sample, has_sample);
     }
+}
+
+uint8_t buttons_pending(void)
+{
+    uint8_t pressed1;
+    uint8_t pressed2;
+
+    pressed1 = (uint8_t)((~BUTTON_PORT_IN) & BUTTON1_BITS);
+    pressed2 = (uint8_t)((~BUTTON2_PORT_IN) & BUTTON2_BITS);
+    return (uint8_t)(g_button1_irq_bits != 0 ||
+                     g_button2_irq_bits != 0 ||
+                     (pressed1 & (uint8_t)~g_button1_last_pressed) != 0 ||
+                     (pressed2 & (uint8_t)~g_button2_last_pressed) != 0);
 }
 
 #pragma vector=PORT2_VECTOR

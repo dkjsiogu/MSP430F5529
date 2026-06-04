@@ -1,5 +1,7 @@
 #include "app_state.h"
 
+#include "board.h"
+
 typedef struct {
     uint16_t magic;
     uint16_t seq;
@@ -19,6 +21,7 @@ static uint16_t g_storage_limit = STORAGE_LIMIT_DEFAULT;
 static uint16_t g_settings_next_index = 0;
 static uint16_t g_settings_next_seq = 0;
 static uint8_t g_settings_save_pending = 0;
+static uint16_t g_settings_save_request_tick = 0;
 
 static long clamp_long(long value, long min_value, long max_value)
 {
@@ -111,6 +114,12 @@ static void settings_write_record(uint16_t index, const SettingsRecord *r)
     FCTL3 = FWKEY | LOCK;
 }
 
+static void settings_mark_save_pending(void)
+{
+    g_settings_save_pending = 1;
+    g_settings_save_request_tick = board_tick10();
+}
+
 void app_state_init(void)
 {
     uint16_t i;
@@ -146,6 +155,10 @@ void app_save_settings(void)
 {
     SettingsRecord r;
 
+    if (!g_settings_save_pending) {
+        return;
+    }
+
     r.magic = SETTINGS_MAGIC;
     r.seq = g_settings_next_seq++;
     r.sample_interval = g_sample_interval;
@@ -167,9 +180,15 @@ void app_save_settings(void)
 
 void app_state_task(void)
 {
-    if (g_settings_save_pending) {
+    if (g_settings_save_pending &&
+        board_tick10_elapsed(g_settings_save_request_tick, SETTINGS_SAVE_DELAY_TICKS)) {
         app_save_settings();
     }
+}
+
+void app_flush_settings(void)
+{
+    app_save_settings();
 }
 
 uint8_t app_sample_interval(void)
@@ -202,7 +221,7 @@ uint8_t app_adjust_sample_interval(int8_t delta_seconds)
     new_interval = (uint8_t)value;
     if (new_interval != g_sample_interval) {
         g_sample_interval = new_interval;
-        g_settings_save_pending = 1;
+        settings_mark_save_pending();
     }
     return g_sample_interval;
 }
@@ -217,7 +236,7 @@ int16_t app_adjust_threshold_t10(int16_t delta_t10)
     new_threshold = (int16_t)threshold;
     if (new_threshold != g_threshold_t10) {
         g_threshold_t10 = new_threshold;
-        g_settings_save_pending = 1;
+        settings_mark_save_pending();
     }
     return g_threshold_t10;
 }
@@ -232,7 +251,7 @@ uint16_t app_adjust_storage_limit(int16_t delta_records)
     new_limit = (uint16_t)value;
     if (new_limit != g_storage_limit) {
         g_storage_limit = new_limit;
-        g_settings_save_pending = 1;
+        settings_mark_save_pending();
     }
     return g_storage_limit;
 }
@@ -247,7 +266,7 @@ uint8_t app_adjust_alarm_duration(int8_t delta_seconds)
     new_duration = (uint8_t)value;
     if (new_duration != g_alarm_duration) {
         g_alarm_duration = new_duration;
-        g_settings_save_pending = 1;
+        settings_mark_save_pending();
     }
     return g_alarm_duration;
 }

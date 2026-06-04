@@ -3,13 +3,15 @@
 
 static volatile uint8_t g_sample_due = 1;
 static volatile uint8_t g_second_count = 0;
+static volatile uint8_t g_subsecond_ticks = 0;
+static volatile uint16_t g_tick_10ms = 0;
 static volatile uint8_t g_buzzer_alarm_seconds = 0;
 static uint8_t g_buzzer_on = 0;
 
 void delay_ms(uint16_t ms)
 {
     while (ms--) {
-        __delay_cycles(SMCLK_HZ / 1000u);
+        __delay_cycles(MCLK_HZ / 1000u);
     }
 }
 
@@ -19,8 +21,9 @@ void clock_init(void)
     UCSCTL4 = SELA_2 | SELS_4 | SELM_4;
     __bis_SR_register(SCG0);
     UCSCTL0 = 0;
-    UCSCTL1 = DCORSEL_2;
-    UCSCTL2 = FLLD_1 | 31;
+    UCSCTL1 = DCORSEL_5;
+    UCSCTL2 = FLLD_0 | 243u;
+    UCSCTL5 = 0;
     __bic_SR_register(SCG0);
     delay_ms(250);
 }
@@ -104,7 +107,7 @@ void buzzer_alert_for(uint8_t seconds)
 
 void sample_timer_init(void)
 {
-    TA0CCR0 = 32768u - 1u;
+    TA0CCR0 = (uint16_t)((32768u / BOARD_TICK_HZ) - 1u);
     TA0CCTL0 = CCIE;
     TA0CTL = TASSEL_1 | MC_1 | TACLR;
 }
@@ -123,22 +126,40 @@ void sample_timer_force_due(void)
     g_sample_due = 1;
 }
 
+uint16_t board_tick10(void)
+{
+    return g_tick_10ms;
+}
+
+uint8_t board_tick10_elapsed(uint16_t start_tick, uint16_t ticks)
+{
+    return (uint8_t)((uint16_t)(board_tick10() - start_tick) >= ticks);
+}
+
 #pragma vector=TIMER0_A0_VECTOR
 __interrupt void TIMER0_A0_ISR(void)
 {
-    if (g_buzzer_alarm_seconds > 0) {
-        g_buzzer_alarm_seconds--;
-        if (g_buzzer_alarm_seconds == 0) {
-            buzzer_set(0);
+    g_tick_10ms++;
+    g_subsecond_ticks++;
+
+    if (g_subsecond_ticks >= BOARD_TICKS_PER_SECOND) {
+        g_subsecond_ticks = 0;
+
+        if (g_buzzer_alarm_seconds > 0) {
+            g_buzzer_alarm_seconds--;
+            if (g_buzzer_alarm_seconds == 0) {
+                buzzer_set(0);
+            }
+        }
+
+        g_second_count++;
+        if (g_second_count >= app_sample_interval()) {
+            g_second_count = 0;
+            g_sample_due = 1;
         }
     }
 
-    g_second_count++;
-    if (g_second_count >= app_sample_interval()) {
-        g_second_count = 0;
-        g_sample_due = 1;
-        __bic_SR_register_on_exit(LPM0_bits);
-    }
+    __bic_SR_register_on_exit(LPM0_bits);
 }
 
 #pragma vector=TIMER2_A0_VECTOR

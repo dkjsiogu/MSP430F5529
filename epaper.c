@@ -93,6 +93,7 @@ static uint8_t g_epd_has_target_sample = 0;
 static uint8_t g_epd_settings_selected = 0;
 static uint8_t g_epd_settings_editing = 0;
 static uint16_t g_epd_target_history_start = 0;
+static uint16_t g_epd_last_auto_frame_tick = 0;
 static TempSample g_epd_target_sample;
 static uint8_t epd_buf[EPD_BUF_SIZE];
 static uint8_t g_anim_frame = 0;
@@ -104,6 +105,20 @@ static uint8_t epd_next_anim_frame(void)
     frame = g_anim_frame;
     g_anim_frame = (uint8_t)((g_anim_frame + 1u) & 0x07u);
     return frame;
+}
+
+static void epd_request_render(uint8_t urgent)
+{
+    (void)urgent;
+    g_epd_render_dirty = 1;
+}
+
+static uint8_t epd_auto_frame_due(void)
+{
+    if (!g_epd_auto_update || !g_epd_has_target_sample) {
+        return 0;
+    }
+    return board_tick10_elapsed(g_epd_last_auto_frame_tick, EPD_AUTO_FRAME_TICKS);
 }
 
 static void epd_bus_idle(void)
@@ -137,11 +152,6 @@ static void spi0_init(void)
     epd_bus_idle();
 }
 
-static void epd_spi_delay(void)
-{
-    __delay_cycles(8);
-}
-
 static void spi0_write(uint8_t value)
 {
     uint8_t bit;
@@ -152,12 +162,9 @@ static void spi0_write(uint8_t value)
         } else {
             EPD_SDI_OUT &= ~EPD_SDI_BIT;
         }
-        epd_spi_delay();
         EPD_CLK_OUT |= EPD_CLK_BIT;
-        epd_spi_delay();
         EPD_CLK_OUT &= ~EPD_CLK_BIT;
         value = (uint8_t)(value << 1);
-        epd_spi_delay();
     }
 }
 
@@ -187,6 +194,24 @@ static void epd_data(uint8_t data)
     EPD_CLK_OUT &= ~EPD_CLK_BIT;
     EPD_DC_OUT |= EPD_DC_BIT;
     spi0_write(data);
+    epd_select(0);
+}
+
+static void epd_data_stream_start(void)
+{
+    epd_select(0);
+    epd_select(1);
+    EPD_CLK_OUT &= ~EPD_CLK_BIT;
+    EPD_DC_OUT |= EPD_DC_BIT;
+}
+
+static void epd_data_stream_write(uint8_t data)
+{
+    spi0_write(data);
+}
+
+static void epd_data_stream_end(void)
+{
     epd_select(0);
 }
 
@@ -285,9 +310,11 @@ static void epd_write_lut(void)
     uint8_t i;
 
     epd_cmd(0x32);
+    epd_data_stream_start();
     for (i = 0; i < sizeof(epd_lut); i++) {
-        epd_data(epd_lut[i]);
+        epd_data_stream_write(epd_lut[i]);
     }
+    epd_data_stream_end();
 }
 
 static void epd_write_partial_lut(void)
@@ -295,9 +322,11 @@ static void epd_write_partial_lut(void)
     uint8_t i;
 
     epd_cmd(0x32);
+    epd_data_stream_start();
     for (i = 0; i < sizeof(epd_partial_lut); i++) {
-        epd_data(epd_partial_lut[i]);
+        epd_data_stream_write(epd_partial_lut[i]);
     }
+    epd_data_stream_end();
 }
 
 static void epd_alt_write_lut(void)
@@ -305,9 +334,11 @@ static void epd_alt_write_lut(void)
     uint8_t i;
 
     epd_cmd(0x32);
+    epd_data_stream_start();
     for (i = 0; i < sizeof(epd_alt_lut); i++) {
-        epd_data(epd_alt_lut[i]);
+        epd_data_stream_write(epd_alt_lut[i]);
     }
+    epd_data_stream_end();
 }
 
 static void epd_set_ram_area(void)
@@ -386,9 +417,9 @@ static void epd_write_new_ram_start(void)
 {
     epd_set_ram_area();
     epd_set_ram_cursor();
-    delay_ms(5);
+    delay_ms(1);
     epd_cmd(0x24);
-    delay_ms(5);
+    delay_ms(1);
 }
 
 static void epd_write_new_ram_fill_only(uint8_t value)
@@ -397,11 +428,13 @@ static void epd_write_new_ram_fill_only(uint8_t value)
     uint16_t row;
 
     epd_write_new_ram_start();
+    epd_data_stream_start();
     for (col = 0; col < EPD_RAM_H; col++) {
         for (row = 0; row < EPD_RAM_W_BYTES; row++) {
-            epd_data(value);
+            epd_data_stream_write(value);
         }
     }
+    epd_data_stream_end();
 }
 
 static void epd_write_new_ram_buffer_only(const uint8_t *buf)
@@ -409,9 +442,11 @@ static void epd_write_new_ram_buffer_only(const uint8_t *buf)
     uint16_t i;
 
     epd_write_new_ram_start();
+    epd_data_stream_start();
     for (i = 0; i < EPD_BUF_SIZE; i++) {
-        epd_data(buf[i]);
+        epd_data_stream_write(buf[i]);
     }
+    epd_data_stream_end();
 }
 
 static void epd_alt_write_ram_buffer_only(const uint8_t *buf)
@@ -420,9 +455,11 @@ static void epd_alt_write_ram_buffer_only(const uint8_t *buf)
 
     epd_alt_set_ram_area();
     epd_cmd(0x24);
+    epd_data_stream_start();
     for (i = 0; i < EPD_ALT_BUF_SIZE; i++) {
-        epd_data(buf[i]);
+        epd_data_stream_write(buf[i]);
     }
+    epd_data_stream_end();
 }
 
 static uint8_t epd_write_buffer_to_screen_partial(const uint8_t *buf)
@@ -485,6 +522,7 @@ void epd_init(void)
     g_epd_has_target_sample = 0;
     g_epd_render_view = EPD_VIEW_CURRENT;
     g_epd_render_dirty = 1;
+    g_epd_last_auto_frame_tick = board_tick10();
 }
 
 static void epd_alt_init(void)
@@ -707,7 +745,7 @@ void epd_full_refresh_once(void)
         epd_ssd_init_controller_and_clear();
     }
 
-    g_epd_render_dirty = 1;
+    epd_request_render(1);
 }
 
 static void epd_alt_pixel(uint16_t x, uint16_t y, uint8_t black)
@@ -997,7 +1035,7 @@ void epd_force_next_current_refresh(void)
     if (g_epd_has_target_sample) {
         g_epd_render_view = EPD_VIEW_CURRENT;
     }
-    g_epd_render_dirty = 1;
+    epd_request_render(1);
 }
 
 void epd_show_current_auto(const TempSample *s)
@@ -1009,7 +1047,7 @@ void epd_show_current_auto(const TempSample *s)
     g_epd_target_sample = *s;
     g_epd_has_target_sample = 1;
     g_epd_render_view = EPD_VIEW_CURRENT;
-    g_epd_render_dirty = 1;
+    epd_request_render(1);
 }
 
 static void record_to_line(const TempRecord *r, char *line)
@@ -1104,7 +1142,7 @@ void epd_show_history_page(uint16_t start)
     g_epd_target_history_start = start;
     g_epd_auto_update = 0;
     g_epd_render_view = EPD_VIEW_HISTORY;
-    g_epd_render_dirty = 1;
+    epd_request_render(1);
 }
 
 void epd_show_settings_page(uint8_t selected, uint8_t editing)
@@ -1116,13 +1154,16 @@ void epd_show_settings_page(uint8_t selected, uint8_t editing)
     g_epd_settings_editing = editing ? 1u : 0u;
     g_epd_auto_update = 0;
     g_epd_render_view = EPD_VIEW_SETTINGS;
-    g_epd_render_dirty = 1;
+    epd_request_render(1);
 }
 
 void epd_render_task(void)
 {
     if (!g_epd_render_dirty) {
-        return;
+        if (!epd_auto_frame_due()) {
+            return;
+        }
+        g_epd_render_dirty = 1;
     }
 
     g_epd_render_dirty = 0;
@@ -1146,7 +1187,7 @@ void epd_render_task(void)
             epd_show_current(&g_epd_target_sample);
         }
         if (g_epd_auto_update) {
-            g_epd_render_dirty = 1;
+            g_epd_last_auto_frame_tick = board_tick10();
         }
     }
 }

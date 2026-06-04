@@ -9,7 +9,10 @@
 #include <msp430.h>
 #include <stdint.h>
 
-#define SMCLK_HZ                    1048576UL
+#define MCLK_HZ                     8000000UL
+#define SMCLK_HZ                    8000000UL
+#define BOARD_TICK_HZ               100u
+#define BOARD_TICKS_PER_SECOND      100u
 #define SAMPLE_INTERVAL_SECONDS     3u
 #define SAMPLE_INTERVAL_MIN_SECONDS 1u
 #define SAMPLE_INTERVAL_MAX_SECONDS 60u
@@ -65,8 +68,9 @@
 #define BUTTON2_PORT_IFG            P2IFG
 #define BUTTON_S3_BIT               BIT3
 #define BUTTON_S4_BIT               BIT6
-#define BUTTON_DEBOUNCE_MS          25u
+#define BUTTON_DEBOUNCE_MS          12u
 #define BUTTON_BEEP_MS              180u
+#define SETTINGS_SAVE_DELAY_TICKS   80u       /* 设置修改后空闲约 0.8 秒再写 Flash。 */
 
 /* 片内主 Flash 日志保留区，需要和 lnk_msp430f5529.cmd 保持一致。 */
 #define FLASH_LOG_START             0xC000u
@@ -119,10 +123,11 @@
 #define EPD_CLK_OUT                 P2OUT
 #define EPD_CLK_BIT                 BIT7
 #define EPD_BUSY_TIMEOUT_MS         8000u
-#define EPD_BUSY_START_TIMEOUT_MS   200u
+#define EPD_BUSY_START_TIMEOUT_MS   40u
 #define EPD_FULL_POST_UPDATE_MS     1500u
 #define EPD_PARTIAL_POST_UPDATE_MS  60u
-#define EPD_NO_BUSY_FALLBACK_MS     250u
+#define EPD_NO_BUSY_FALLBACK_MS     120u
+#define EPD_AUTO_FRAME_TICKS        12u       /* 自动页两帧之间留出约 120ms 给按键和采样。 */
 #define EPD_STARTUP_SETTLE_MS       500u
 #define EPD_RESET_PRE_MS            50u
 #define EPD_RESET_LOW_MS            100u

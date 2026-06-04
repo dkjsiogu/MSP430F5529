@@ -11,6 +11,7 @@
 void app_state_init(void);                                 /* 启动时从 Info Flash 加载持久化应用设置。 */
 void app_state_task(void);                                 /* 在显示刷新后补写待保存的应用状态。 */
 void app_save_settings(void);                              /* 将当前应用设置追加保存到 Info Flash。 */
+void app_flush_settings(void);                             /* 如有待保存设置，立即写入 Info Flash。 */
 uint8_t app_sample_interval(void);                         /* 获取当前定时采样间隔，单位秒。 */
 uint8_t app_alarm_duration_seconds(void);                  /* 获取当前报警鸣叫时长，单位秒。 */
 uint16_t app_storage_limit(void);                          /* 获取当前 Flash 历史记录目标存储条数。 */
