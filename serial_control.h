@@ -4,7 +4,7 @@
  * 不向串口发送任何响应。
  */
 #ifndef SERIAL_CONTROL_H
-#define SERIAL_CONTROL_H
+#define SERIAL_CONTROL_H                                /* 防止 serial_control.h 被重复包含。 */
 
 void serial_control_poll(void);                            /* 读取一个待处理串口字符并执行对应本地控制。 */
 

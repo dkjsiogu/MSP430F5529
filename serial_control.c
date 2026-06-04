@@ -9,6 +9,7 @@
 
 static uint16_t g_history_page = 0;
 
+/* 解析串口收到的单字符命令，并映射为本地显示或设置动作。 */
 static void handle_rx_char(uint8_t cmd)
 {
     uint16_t count;

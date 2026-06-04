@@ -4,7 +4,7 @@
  * 以及本地控制使用的屏幕驱动选择。
  */
 #ifndef EPAPER_H
-#define EPAPER_H
+#define EPAPER_H                                        /* 防止 epaper.h 被重复包含。 */
 
 #include "app_types.h"
 

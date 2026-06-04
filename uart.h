@@ -4,7 +4,7 @@
  * 本模块不再负责样本、状态或调试文本输出。
  */
 #ifndef UART_H
-#define UART_H
+#define UART_H                                          /* 防止 uart.h 被重复包含。 */
 
 #include "app_types.h"
 

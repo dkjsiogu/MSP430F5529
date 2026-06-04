@@ -81,9 +81,9 @@ static const uint8_t epd_alt_lut[90] = {
     0x00, 0x00
 };
 
-#define EPD_VIEW_CURRENT            0u
-#define EPD_VIEW_HISTORY            1u
-#define EPD_VIEW_SETTINGS           2u
+#define EPD_VIEW_CURRENT            0u /* 当前温度主界面渲染目标。 */
+#define EPD_VIEW_HISTORY            1u /* Flash 历史记录界面渲染目标。 */
+#define EPD_VIEW_SETTINGS           2u /* 设置界面渲染目标。 */
 
 static uint8_t g_epd_auto_update = 1;
 static uint8_t g_epd_driver = EPD_DRIVER_SSD1673;
@@ -100,6 +100,7 @@ static TempSample g_epd_target_sample;
 static uint8_t epd_buf[EPD_BUF_SIZE];
 static uint8_t g_anim_frame = 0;
 
+/* 返回当前动画帧号并推进到下一帧，用于右侧小动画循环。 */
 static uint8_t epd_next_anim_frame(void)
 {
     uint8_t frame;
@@ -109,12 +110,14 @@ static uint8_t epd_next_anim_frame(void)
     return frame;
 }
 
+/* 标记墨水屏有新的目标画面需要渲染。 */
 static void epd_request_render(uint8_t urgent)
 {
     (void)urgent;
     g_epd_render_dirty = 1;
 }
 
+/* 判断主界面自动动画帧是否到达刷新间隔。 */
 static uint8_t epd_auto_frame_due(void)
 {
     if (!g_epd_auto_update || !g_epd_has_target_sample) {
@@ -123,6 +126,7 @@ static uint8_t epd_auto_frame_due(void)
     return board_tick10_elapsed(g_epd_last_auto_frame_tick, EPD_AUTO_FRAME_TICKS);
 }
 
+/* 根据历史记录数量计算自动播放时优先显示最近记录的起始下标。 */
 static uint16_t epd_history_latest_start(uint16_t count)
 {
     if (count <= HISTORY_ROWS_ON_EPD) {
@@ -131,6 +135,7 @@ static uint16_t epd_history_latest_start(uint16_t count)
     return (uint16_t)(count - HISTORY_ROWS_ON_EPD);
 }
 
+/* 判断历史记录自动播放是否需要滚动到下一页。 */
 static uint8_t epd_history_frame_due(void)
 {
     uint16_t count;
@@ -155,6 +160,7 @@ static uint8_t epd_history_frame_due(void)
     return 1;
 }
 
+/* 将墨水屏 SPI 控制线恢复到空闲电平。 */
 static void epd_bus_idle(void)
 {
     EPD_CS_OUT |= EPD_CS_BIT;
@@ -163,6 +169,7 @@ static void epd_bus_idle(void)
     EPD_DC_OUT |= EPD_DC_BIT;
 }
 
+/* 初始化墨水屏使用的 GPIO 和软件 SPI 引脚方向。 */
 static void spi0_init(void)
 {
     EPD_BUSY_SEL &= ~EPD_BUSY_BIT;
@@ -186,6 +193,7 @@ static void spi0_init(void)
     epd_bus_idle();
 }
 
+/* 通过软件 SPI 向墨水屏发送一个字节。 */
 static void spi0_write(uint8_t value)
 {
     uint8_t bit;
@@ -202,6 +210,7 @@ static void spi0_write(uint8_t value)
     }
 }
 
+/* 控制墨水屏片选信号，selected 为 1 时选中屏幕。 */
 static void epd_select(uint8_t selected)
 {
     if (selected) {
@@ -211,6 +220,7 @@ static void epd_select(uint8_t selected)
     }
 }
 
+/* 向墨水屏控制器发送一个命令字节。 */
 static void epd_cmd(uint8_t cmd)
 {
     epd_select(0);
@@ -221,6 +231,7 @@ static void epd_cmd(uint8_t cmd)
     epd_select(0);
 }
 
+/* 向墨水屏控制器发送一个数据字节。 */
 static void epd_data(uint8_t data)
 {
     epd_select(0);
@@ -231,6 +242,7 @@ static void epd_data(uint8_t data)
     epd_select(0);
 }
 
+/* 进入连续数据写入状态，减少每字节切片选的开销。 */
 static void epd_data_stream_start(void)
 {
     epd_select(0);
@@ -239,16 +251,19 @@ static void epd_data_stream_start(void)
     EPD_DC_OUT |= EPD_DC_BIT;
 }
 
+/* 在连续数据写入状态下发送一个数据字节。 */
 static void epd_data_stream_write(uint8_t data)
 {
     spi0_write(data);
 }
 
+/* 结束连续数据写入并释放片选。 */
 static void epd_data_stream_end(void)
 {
     epd_select(0);
 }
 
+/* 等待 BUSY 引脚释放，超时返回 0。 */
 static uint8_t epd_wait_busy(uint16_t timeout_ms)
 {
     while ((EPD_BUSY_IN & EPD_BUSY_BIT) && timeout_ms > 0) {
@@ -262,6 +277,7 @@ static uint8_t epd_wait_busy(uint16_t timeout_ms)
     return 1;
 }
 
+/* 触发刷新后等待 BUSY 完成，并补充控制器稳定等待时间。 */
 static uint8_t epd_wait_update_done(uint16_t post_update_ms, uint16_t no_busy_wait_ms)
 {
     uint16_t timeout_ms;
@@ -290,6 +306,7 @@ static uint8_t epd_wait_update_done(uint16_t post_update_ms, uint16_t no_busy_wa
     return saw_busy;
 }
 
+/* 对墨水屏执行硬件复位时序。 */
 static void epd_reset(void)
 {
     epd_bus_idle();
@@ -302,6 +319,7 @@ static void epd_reset(void)
     epd_bus_idle();
 }
 
+/* 发送控制器软复位命令并等待其恢复可用。 */
 static uint8_t epd_soft_reset(void)
 {
     uint16_t timeout_ms;
@@ -329,6 +347,7 @@ static uint8_t epd_soft_reset(void)
     return 1;
 }
 
+/* 在无法确定上电状态时重新初始化总线并复位控制器。 */
 static void epd_recover_from_unknown_state(void)
 {
     spi0_init();
@@ -339,6 +358,7 @@ static void epd_recover_from_unknown_state(void)
     (void)epd_wait_busy(EPD_BUSY_TIMEOUT_MS);
 }
 
+/* 写入 SSD1673 全屏刷新波形表。 */
 static void epd_write_lut(void)
 {
     uint8_t i;
@@ -351,6 +371,7 @@ static void epd_write_lut(void)
     epd_data_stream_end();
 }
 
+/* 写入 SSD1673 局部刷新波形表。 */
 static void epd_write_partial_lut(void)
 {
     uint8_t i;
@@ -363,6 +384,7 @@ static void epd_write_partial_lut(void)
     epd_data_stream_end();
 }
 
+/* 写入备用墨水屏驱动使用的波形表。 */
 static void epd_alt_write_lut(void)
 {
     uint8_t i;
@@ -375,6 +397,7 @@ static void epd_alt_write_lut(void)
     epd_data_stream_end();
 }
 
+/* 设置 SSD1673 的原生 RAM 写入窗口。 */
 static void epd_set_ram_area(void)
 {
     epd_cmd(0x11);
@@ -387,6 +410,7 @@ static void epd_set_ram_area(void)
     epd_data(0x00);
 }
 
+/* 将 SSD1673 RAM 写入游标移动到窗口起点。 */
 static void epd_set_ram_cursor(void)
 {
     epd_cmd(0x4E);
@@ -395,6 +419,7 @@ static void epd_set_ram_cursor(void)
     epd_data(0xF9);
 }
 
+/* 设置备用驱动的 RAM 写入窗口和游标。 */
 static void epd_alt_set_ram_area(void)
 {
     epd_cmd(0x11);
@@ -411,6 +436,7 @@ static void epd_alt_set_ram_area(void)
     epd_data(0xAB);
 }
 
+/* 使用指定刷新控制字触发一次墨水屏刷新。 */
 static uint8_t epd_update_with_ctrl(uint8_t ctrl, uint16_t post_update_ms, uint16_t no_busy_wait_ms)
 {
     uint8_t saw_busy;
@@ -423,11 +449,13 @@ static uint8_t epd_update_with_ctrl(uint8_t ctrl, uint16_t post_update_ms, uint1
     return saw_busy;
 }
 
+/* 对 SSD1673 执行一次全屏刷新。 */
 static uint8_t epd_update(void)
 {
     return epd_update_with_ctrl(EPD_UPDATE_CTRL_FULL, EPD_FULL_POST_UPDATE_MS, EPD_FULL_POST_UPDATE_MS);
 }
 
+/* 对备用驱动执行一次局部刷新，并让控制器回到待机刷新状态。 */
 static uint8_t epd_alt_update(void)
 {
     uint8_t saw_busy;
@@ -447,6 +475,7 @@ static uint8_t epd_alt_update(void)
     return saw_busy;
 }
 
+/* 准备向 SSD1673 新图像 RAM 写入数据。 */
 static void epd_write_new_ram_start(void)
 {
     epd_set_ram_area();
@@ -456,6 +485,7 @@ static void epd_write_new_ram_start(void)
     delay_ms(1);
 }
 
+/* 用同一个字节填充 SSD1673 新图像 RAM。 */
 static void epd_write_new_ram_fill_only(uint8_t value)
 {
     uint16_t col;
@@ -471,6 +501,7 @@ static void epd_write_new_ram_fill_only(uint8_t value)
     epd_data_stream_end();
 }
 
+/* 将帧缓冲内容写入 SSD1673 新图像 RAM，但暂不触发刷新。 */
 static void epd_write_new_ram_buffer_only(const uint8_t *buf)
 {
     uint16_t i;
@@ -483,6 +514,7 @@ static void epd_write_new_ram_buffer_only(const uint8_t *buf)
     epd_data_stream_end();
 }
 
+/* 将帧缓冲内容写入备用驱动的图像 RAM，但暂不触发刷新。 */
 static void epd_alt_write_ram_buffer_only(const uint8_t *buf)
 {
     uint16_t i;
@@ -496,6 +528,7 @@ static void epd_alt_write_ram_buffer_only(const uint8_t *buf)
     epd_data_stream_end();
 }
 
+/* 将当前帧缓冲通过 SSD1673 局部刷新送到屏幕。 */
 static uint8_t epd_write_buffer_to_screen_partial(const uint8_t *buf)
 {
     uint8_t busy_seen;
@@ -511,12 +544,14 @@ static uint8_t epd_write_buffer_to_screen_partial(const uint8_t *buf)
     return busy_seen;
 }
 
+/* 将当前帧缓冲送到备用驱动并触发刷新。 */
 static uint8_t epd_alt_write_buffer_to_screen(const uint8_t *buf)
 {
     epd_alt_write_ram_buffer_only(buf);
     return epd_alt_update();
 }
 
+/* 初始化 SSD1673 控制器并清成白底，为后续局部刷新建立基准。 */
 static void epd_ssd_init_controller_and_clear(void)
 {
     EPD_BUSY_REN &= ~EPD_BUSY_BIT;
@@ -561,6 +596,7 @@ void epd_init(void)
     g_epd_last_history_scroll_tick = board_tick10();
 }
 
+/* 初始化备用墨水屏控制器。 */
 static void epd_alt_init(void)
 {
     EPD_BUSY_REN &= ~EPD_BUSY_BIT;
@@ -594,6 +630,7 @@ static void epd_alt_init(void)
     epd_alt_write_lut();
 }
 
+/* 清空 SSD1673 渲染帧缓冲，0xFF 表示白色像素。 */
 static void epd_clear_buffer(void)
 {
     uint16_t i;
@@ -603,6 +640,7 @@ static void epd_clear_buffer(void)
     }
 }
 
+/* 在 SSD1673 逻辑坐标中写入一个像素。 */
 static void epd_pixel(uint16_t x, uint16_t y, uint8_t black)
 {
     uint16_t ram_x;
@@ -626,6 +664,7 @@ static void epd_pixel(uint16_t x, uint16_t y, uint8_t black)
     }
 }
 
+/* 在 SSD1673 帧缓冲中绘制一个黑色矩形，允许坐标为负数裁剪。 */
 static void epd_fill_rect_i(int16_t x, int16_t y, uint8_t w, uint8_t h)
 {
     uint8_t dx;
@@ -647,6 +686,7 @@ static void epd_fill_rect_i(int16_t x, int16_t y, uint8_t w, uint8_t h)
     }
 }
 
+/* 在 SSD1673 主界面右侧绘制一帧状态动画。 */
 static void epd_draw_status_anim(uint16_t cx, uint16_t cy, uint8_t frame)
 {
     static const int8_t tx[8] = {0, 9, 12, 9, 0, -9, -12, -9};
@@ -715,6 +755,7 @@ static void epd_draw_status_anim(uint16_t cx, uint16_t cy, uint8_t frame)
     epd_fill_rect_i((int16_t)(x + tx[frame] - 2), (int16_t)(y + ty[frame] - 2), 5u, 5u);
 }
 
+/* 使用 5x7 字库在 SSD1673 帧缓冲中绘制一个字符。 */
 static void epd_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
 {
     uint8_t col;
@@ -744,6 +785,7 @@ static void epd_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
     }
 }
 
+/* 使用 5x7 字库在 SSD1673 帧缓冲中绘制字符串。 */
 static void epd_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale)
 {
     uint16_t cursor;
@@ -757,11 +799,13 @@ static void epd_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale
     }
 }
 
+/* 把 SSD1673 帧缓冲以局部刷新方式提交到屏幕。 */
 static void epd_flush_partial(void)
 {
     (void)epd_write_buffer_to_screen_partial(epd_buf);
 }
 
+/* 清空备用驱动渲染帧缓冲，0xFF 表示白色像素。 */
 static void epd_alt_clear_buffer(void)
 {
     uint16_t i;
@@ -784,6 +828,7 @@ void epd_full_refresh_once(void)
     epd_request_render(1);
 }
 
+/* 在备用驱动逻辑坐标中写入一个像素。 */
 static void epd_alt_pixel(uint16_t x, uint16_t y, uint8_t black)
 {
     uint16_t index;
@@ -803,6 +848,7 @@ static void epd_alt_pixel(uint16_t x, uint16_t y, uint8_t black)
     }
 }
 
+/* 在备用驱动帧缓冲中绘制一个黑色矩形，允许坐标为负数裁剪。 */
 static void epd_alt_fill_rect_i(int16_t x, int16_t y, uint8_t w, uint8_t h)
 {
     uint8_t dx;
@@ -824,6 +870,7 @@ static void epd_alt_fill_rect_i(int16_t x, int16_t y, uint8_t w, uint8_t h)
     }
 }
 
+/* 在备用驱动主界面右侧绘制一帧状态动画。 */
 static void epd_alt_draw_status_anim(uint16_t cx, uint16_t cy, uint8_t frame)
 {
     static const int8_t tx[8] = {0, 9, 12, 9, 0, -9, -12, -9};
@@ -892,6 +939,7 @@ static void epd_alt_draw_status_anim(uint16_t cx, uint16_t cy, uint8_t frame)
     epd_alt_fill_rect_i((int16_t)(x + tx[frame] - 2), (int16_t)(y + ty[frame] - 2), 5u, 5u);
 }
 
+/* 使用 5x7 字库在备用驱动帧缓冲中绘制一个字符。 */
 static void epd_alt_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
 {
     uint8_t col;
@@ -921,6 +969,7 @@ static void epd_alt_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
     }
 }
 
+/* 使用 5x7 字库在备用驱动帧缓冲中绘制字符串。 */
 static void epd_alt_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale)
 {
     uint16_t cursor;
@@ -934,6 +983,7 @@ static void epd_alt_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t s
     }
 }
 
+/* 将温度样本转换为主界面显示用的四行文本。 */
 static void sample_to_lines(const TempSample *s, char line[4][24])
 {
     char *p;
@@ -959,6 +1009,7 @@ static void sample_to_lines(const TempSample *s, char line[4][24])
     (void)append_str(p, " C");
 }
 
+/* 将一个设置项转换为设置页面显示文本。 */
 static void setting_to_line(uint8_t item, uint8_t selected, uint8_t editing, char *line)
 {
     char *p;
@@ -994,6 +1045,7 @@ static void setting_to_line(uint8_t item, uint8_t selected, uint8_t editing, cha
     }
 }
 
+/* 使用备用驱动渲染设置页面并刷新到屏幕。 */
 static void epd_alt_show_settings(void)
 {
     uint8_t i;
@@ -1008,6 +1060,7 @@ static void epd_alt_show_settings(void)
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
+/* 使用 SSD1673 渲染设置页面并局部刷新到屏幕。 */
 static void epd_show_settings(void)
 {
     uint8_t i;
@@ -1022,6 +1075,7 @@ static void epd_show_settings(void)
     epd_flush_partial();
 }
 
+/* 使用备用驱动渲染当前温度主界面。 */
 static void epd_alt_show_current(const TempSample *s)
 {
     char lines[4][24];
@@ -1044,6 +1098,7 @@ static void epd_alt_show_current(const TempSample *s)
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
+/* 使用 SSD1673 渲染当前温度主界面。 */
 static void epd_show_current(const TempSample *s)
 {
     char lines[4][24];
@@ -1087,6 +1142,7 @@ void epd_show_current_auto(const TempSample *s)
     epd_request_render(1);
 }
 
+/* 将 Flash 历史记录转换成一行简短文本。 */
 static void record_to_line(const TempRecord *r, char *line)
 {
     char *p;
@@ -1102,6 +1158,7 @@ static void record_to_line(const TempRecord *r, char *line)
     (void)append_t10(p, r->tmp_local_t10);
 }
 
+/* 根据历史页起点和行号计算实际记录下标，支持循环滚动。 */
 static uint16_t history_row_index(uint16_t start, uint8_t row, uint16_t count)
 {
     uint16_t index;
@@ -1113,6 +1170,7 @@ static uint16_t history_row_index(uint16_t start, uint8_t row, uint16_t count)
     return index;
 }
 
+/* 生成历史页面顶部的记录位置和自动播放状态文本。 */
 static void history_meta_line(uint16_t start, uint16_t count, char *line)
 {
     char *p;
@@ -1128,6 +1186,7 @@ static void history_meta_line(uint16_t start, uint16_t count, char *line)
     (void)append_str(p, " AUTO");
 }
 
+/* 使用备用驱动渲染历史记录页面。 */
 static void epd_alt_show_history(uint16_t start)
 {
     uint16_t count;
@@ -1166,6 +1225,7 @@ static void epd_alt_show_history(uint16_t start)
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
+/* 使用 SSD1673 渲染历史记录页面。 */
 static void epd_show_history(uint16_t start)
 {
     uint16_t count;

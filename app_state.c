@@ -12,7 +12,7 @@ typedef struct {
     uint16_t crc;
 } SettingsRecord;
 
-#define SETTINGS_RECORD_COUNT       ((SETTINGS_FLASH_END - SETTINGS_FLASH_START) / sizeof(SettingsRecord))
+#define SETTINGS_RECORD_COUNT       ((SETTINGS_FLASH_END - SETTINGS_FLASH_START) / sizeof(SettingsRecord)) /* Info Flash 设置区最多可保存的设置记录数。 */
 
 static uint8_t g_sample_interval = SAMPLE_INTERVAL_SECONDS;
 static uint8_t g_alarm_duration = ALARM_DURATION_SECONDS;
@@ -23,6 +23,7 @@ static uint16_t g_settings_next_seq = 0;
 static uint8_t g_settings_save_pending = 0;
 static uint16_t g_settings_save_request_tick = 0;
 
+/* 将设置项调整后的数值限制在允许范围内，避免写入越界配置。 */
 static long clamp_long(long value, long min_value, long max_value)
 {
     if (value < min_value) {
@@ -34,6 +35,7 @@ static long clamp_long(long value, long min_value, long max_value)
     return value;
 }
 
+/* 计算设置记录校验值，用来判断 Info Flash 中的配置是否完整有效。 */
 static uint16_t settings_crc(const SettingsRecord *r)
 {
     uint16_t crc;
@@ -53,6 +55,7 @@ static uint16_t settings_crc(const SettingsRecord *r)
     return crc;
 }
 
+/* 检查一条设置记录的标识、范围和 CRC 是否都合法。 */
 static uint8_t settings_record_valid(const SettingsRecord *r)
 {
     if (r->magic != SETTINGS_MAGIC) {
@@ -73,6 +76,7 @@ static uint8_t settings_record_valid(const SettingsRecord *r)
     return (uint8_t)(settings_crc(r) == r->crc);
 }
 
+/* 擦除保存设置用的 Info Flash 段，记录区写满后从头重新写。 */
 static void settings_erase_segment(void)
 {
     while (FCTL3 & BUSY) {
@@ -88,6 +92,7 @@ static void settings_erase_segment(void)
     FCTL3 = FWKEY | LOCK;
 }
 
+/* 向 Info Flash 指定槽位写入一条设置记录。 */
 static void settings_write_record(uint16_t index, const SettingsRecord *r)
 {
     const uint16_t *src;
@@ -114,6 +119,7 @@ static void settings_write_record(uint16_t index, const SettingsRecord *r)
     FCTL3 = FWKEY | LOCK;
 }
 
+/* 标记设置需要稍后保存，避开连续按键时频繁擦写 Flash。 */
 static void settings_mark_save_pending(void)
 {
     g_settings_save_pending = 1;

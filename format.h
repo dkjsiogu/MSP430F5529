@@ -4,7 +4,7 @@
  * 无符号整数和 0.1 摄氏度温度文本，供串口和墨水屏共用。
  */
 #ifndef FORMAT_H
-#define FORMAT_H
+#define FORMAT_H                                        /* 防止 format.h 被重复包含。 */
 
 #include "app_types.h"
 

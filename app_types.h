@@ -4,15 +4,15 @@
  * NTC 查表点等结构体都放在这里，避免各模块重复定义。
  */
 #ifndef APP_TYPES_H
-#define APP_TYPES_H
+#define APP_TYPES_H                                      /* 防止 app_types.h 被重复包含。 */
 
 #include "app_config.h"
 
-#define INVALID_T10                 ((int16_t)-32768)
+#define INVALID_T10                 ((int16_t)-32768)    /* 无效温度标记，单位仍按 0.1 摄氏度存储。 */
 
-#define FLAG_DIE_OK                 0x0001u
-#define FLAG_NTC_OK                 0x0002u
-#define FLAG_TMP_LOCAL_OK           0x0004u
+#define FLAG_DIE_OK                 0x0001u             /* 片内 DIE 温度采集有效标志。 */
+#define FLAG_NTC_OK                 0x0002u             /* NTC 热敏电阻温度采集有效标志。 */
+#define FLAG_TMP_LOCAL_OK           0x0004u             /* TMP421 本地温度采集有效标志。 */
 
 typedef struct {
     uint16_t adc;

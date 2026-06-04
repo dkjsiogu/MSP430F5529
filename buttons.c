@@ -4,24 +4,24 @@
 #include "board.h"
 #include "epaper.h"
 
-#define BUTTON_EVENT_S1             0x01u
-#define BUTTON_EVENT_S2             0x02u
-#define BUTTON_EVENT_S3             0x04u
-#define BUTTON_EVENT_S4             0x08u
+#define BUTTON_EVENT_S1             0x01u /* S1 按键按下事件标志。 */
+#define BUTTON_EVENT_S2             0x02u /* S2 按键按下事件标志。 */
+#define BUTTON_EVENT_S3             0x04u /* S3 按键按下事件标志。 */
+#define BUTTON_EVENT_S4             0x08u /* S4 按键按下事件标志。 */
 
-#define BUTTON_MODE_MAIN            0u
-#define BUTTON_MODE_SETTINGS_SELECT 1u
-#define BUTTON_MODE_SETTINGS_EDIT   2u
-#define BUTTON_MODE_HISTORY         3u
+#define BUTTON_MODE_MAIN            0u   /* 主温度界面按键模式。 */
+#define BUTTON_MODE_SETTINGS_SELECT 1u   /* 设置界面参数选择模式。 */
+#define BUTTON_MODE_SETTINGS_EDIT   2u   /* 设置界面参数编辑模式。 */
+#define BUTTON_MODE_HISTORY         3u   /* 历史记录播放界面按键模式。 */
 
-#define SETTINGS_ITEM_SAMPLE        0u
-#define SETTINGS_ITEM_ALARM_TEMP    1u
-#define SETTINGS_ITEM_STORAGE       2u
-#define SETTINGS_ITEM_ALARM_TIME    3u
-#define SETTINGS_ITEM_COUNT         4u
+#define SETTINGS_ITEM_SAMPLE        0u   /* 设置项：定时采样间隔。 */
+#define SETTINGS_ITEM_ALARM_TEMP    1u   /* 设置项：报警温度阈值。 */
+#define SETTINGS_ITEM_STORAGE       2u   /* 设置项：Flash 历史记录保存条数。 */
+#define SETTINGS_ITEM_ALARM_TIME    3u   /* 设置项：蜂鸣器报警持续时间。 */
+#define SETTINGS_ITEM_COUNT         4u   /* 设置项总数，用于选择项循环。 */
 
-#define BUTTON1_BITS                (BUTTON_S1_BIT | BUTTON_S2_BIT)
-#define BUTTON2_BITS                (BUTTON_S3_BIT | BUTTON_S4_BIT)
+#define BUTTON1_BITS                (BUTTON_S1_BIT | BUTTON_S2_BIT) /* P1 端口上 S1/S2 的位掩码。 */
+#define BUTTON2_BITS                (BUTTON_S3_BIT | BUTTON_S4_BIT) /* P2 端口上 S3/S4 的位掩码。 */
 
 static volatile uint8_t g_button1_irq_bits = 0;
 static volatile uint8_t g_button2_irq_bits = 0;
@@ -56,6 +56,7 @@ void buttons_init(void)
     BUTTON2_PORT_IE |= BUTTON2_BITS;
 }
 
+/* 根据每个按键独立的保护时间过滤重复边沿，减少误触发。 */
 static uint8_t button_event_allowed(uint8_t event)
 {
     uint16_t now;
@@ -87,6 +88,7 @@ static uint8_t button_event_allowed(uint8_t event)
     return 1;
 }
 
+/* 从端口中断和实时电平中提取一次稳定的 S1-S4 按键事件。 */
 static uint8_t buttons_take_events(void)
 {
     uint8_t irq1_bits;
@@ -152,6 +154,7 @@ __interrupt void PORT1_ISR(void)
     }
 }
 
+/* 根据当前温度样本刷新蜂鸣器报警状态。 */
 static void buttons_apply_alarm_state(const TempSample *last_sample, uint8_t has_sample)
 {
     if (has_sample && last_sample != 0) {
@@ -163,11 +166,13 @@ static void buttons_apply_alarm_state(const TempSample *last_sample, uint8_t has
     }
 }
 
+/* 按当前选择项和编辑状态刷新设置页面。 */
 static void buttons_show_settings(void)
 {
     epd_show_settings_page(g_settings_item, (uint8_t)(g_button_mode == BUTTON_MODE_SETTINGS_EDIT));
 }
 
+/* 从主界面进入设置选择模式，并显示第一个设置项。 */
 static void buttons_enter_settings(void)
 {
     g_button_mode = BUTTON_MODE_SETTINGS_SELECT;
@@ -175,12 +180,14 @@ static void buttons_enter_settings(void)
     buttons_show_settings();
 }
 
+/* 从主界面进入 Flash 历史记录自动播放页面。 */
 static void buttons_enter_history(void)
 {
     g_button_mode = BUTTON_MODE_HISTORY;
     epd_show_history_playback();
 }
 
+/* 退出设置或历史页面，保存设置并恢复主温度界面自动刷新。 */
 static void buttons_return_main(void)
 {
     g_button_mode = BUTTON_MODE_MAIN;
@@ -189,6 +196,7 @@ static void buttons_return_main(void)
     sample_timer_force_due();
 }
 
+/* 在设置选择模式中上下切换当前参数项。 */
 static void buttons_move_setting(int8_t delta)
 {
     if (delta < 0) {
@@ -206,6 +214,7 @@ static void buttons_move_setting(int8_t delta)
     buttons_show_settings();
 }
 
+/* 在设置编辑模式中根据方向调整当前参数，并刷新页面。 */
 static void buttons_adjust_setting(const TempSample *last_sample, uint8_t has_sample, int8_t direction)
 {
     switch (g_settings_item) {
@@ -228,12 +237,14 @@ static void buttons_adjust_setting(const TempSample *last_sample, uint8_t has_sa
     buttons_show_settings();
 }
 
+/* 执行一次类似上电后的墨水屏全屏刷新，并强制重新采样。 */
 static void buttons_manual_refresh(void)
 {
     epd_full_refresh_once();
     sample_timer_force_due();
 }
 
+/* 在设置页的选择模式和编辑模式之间切换。 */
 static void buttons_confirm_setting(void)
 {
     if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {

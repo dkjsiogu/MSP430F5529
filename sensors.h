@@ -4,7 +4,7 @@
  * 给主循环提供统一的 TempSample 采样结果。
  */
 #ifndef SENSORS_H
-#define SENSORS_H
+#define SENSORS_H                                       /* 防止 sensors.h 被重复包含。 */
 
 #include "app_types.h"
 

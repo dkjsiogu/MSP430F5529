@@ -4,7 +4,7 @@
  * 同时提供串口打印历史数据的辅助函数。
  */
 #ifndef FLASH_LOG_H
-#define FLASH_LOG_H
+#define FLASH_LOG_H                                     /* 防止 flash_log.h 被重复包含。 */
 
 #include "app_types.h"
 

@@ -4,7 +4,7 @@
  * 采样定时器、蜂鸣器 PWM 和心跳 LED 都由这个模块封装。
  */
 #ifndef BOARD_H
-#define BOARD_H
+#define BOARD_H                                         /* 防止 board.h 被重复包含。 */
 
 #include "app_types.h"
 

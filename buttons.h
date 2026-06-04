@@ -4,7 +4,7 @@
  * 和当前按键业务动作，主循环只需要调用统一任务入口。
  */
 #ifndef BUTTONS_H
-#define BUTTONS_H
+#define BUTTONS_H                                       /* 防止 buttons.h 被重复包含。 */
 
 #include "app_types.h"
 

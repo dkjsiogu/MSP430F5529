@@ -3,11 +3,12 @@
 #include "app_state.h"
 #include "format.h"
 
-#define FLASH_RECORD_COUNT          ((FLASH_LOG_END - FLASH_LOG_START) / sizeof(TempRecord))
+#define FLASH_RECORD_COUNT          ((FLASH_LOG_END - FLASH_LOG_START) / sizeof(TempRecord)) /* Flash 历史记录区最多能容纳的温度记录数。 */
 
 static uint16_t g_flash_next_index = 0;
 static uint16_t g_next_seq = 0;
 
+/* 计算温度历史记录 CRC，用来发现 Flash 中未写完或损坏的记录。 */
 static uint16_t record_crc(const TempRecord *r)
 {
     const uint16_t *w;
@@ -23,6 +24,7 @@ static uint16_t record_crc(const TempRecord *r)
     return crc;
 }
 
+/* 判断一条 Flash 温度记录的 magic 和 CRC 是否有效。 */
 static uint8_t record_valid(const TempRecord *r)
 {
     if (r->magic != RECORD_MAGIC) {
@@ -31,6 +33,7 @@ static uint8_t record_valid(const TempRecord *r)
     return (uint8_t)(record_crc(r) == r->crc);
 }
 
+/* 擦除从 addr 开始的一个主 Flash 段。 */
 static void flash_erase_segment(uint16_t addr)
 {
     while (FCTL3 & BUSY) {
@@ -59,6 +62,7 @@ void flash_erase_log(void)
     __enable_interrupt();
 }
 
+/* 把一条温度记录写入 Flash 历史记录区的指定下标。 */
 static void flash_write_record(uint16_t index, const TempRecord *r)
 {
     const uint16_t *src;

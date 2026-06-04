@@ -4,7 +4,7 @@
  * 和温度有效性判断，给主循环、蜂鸣器和显示模块提供统一入口。
  */
 #ifndef APP_STATE_H
-#define APP_STATE_H
+#define APP_STATE_H                                     /* 防止 app_state.h 被重复包含。 */
 
 #include "app_types.h"
 
