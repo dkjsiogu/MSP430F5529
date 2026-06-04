@@ -1,0 +1,13 @@
+"./app_state.obj"
+"./board.obj"
+"./buttons.obj"
+"./epaper.obj"
+"./flash_log.obj"
+"./format.obj"
+"./main.obj"
+"./sensors.obj"
+"./serial_control.obj"
+"./uart.obj"
+"../lnk_msp430f5529.cmd"
+-llibmath.a
+-llibc.a

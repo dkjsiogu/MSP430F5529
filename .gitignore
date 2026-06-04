@@ -1,0 +1,25 @@
+# CCS / MSP430 build outputs
+Debug/*
+!Debug/
+!Debug/makefile
+!Debug/objects.mk
+!Debug/sources.mk
+!Debug/subdir_rules.mk
+!Debug/subdir_vars.mk
+!Debug/ccsObjs.opt
+
+*.obj
+*.out
+*.map
+*.d
+*.d_raw
+*_linkInfo.xml
+
+# Local debug launch history and editor caches
+.launches/
+Debug/.clangd/
+
+# Misc temporary files
+*.tmp
+*.bak
+*.log

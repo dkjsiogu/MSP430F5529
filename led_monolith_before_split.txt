@@ -1,0 +1,2364 @@
+#include <msp430.h>
+#include <stdint.h>
+
+/*
+ * MSP430F5529 Pocket Kit temperature logger
+ *
+ * Sensors:
+ *   - MSP430F5529 internal temperature sensor, ADC12 channel A10.
+ *   - External NTC thermistor on P6.5/A5 by default.
+ *   - TMP421 on UCB0 I2C: P3.1=SCL, P3.0=SDA, address auto-detected.
+ *
+ * Outputs:
+ *   - UART: P4.4=TX, P4.5=RX, 9600 8N1.
+ *   - 2.13 in E-paper module through bit-banged 4-wire SPI.
+ *   - Passive buzzer on P3.6, 2 kHz square-wave alarm.
+ *
+ * UART commands:
+ *   h: print history and show the first history page on E-paper.
+ *   n: show next history page on E-paper.
+ *   c: collect one sample immediately.
+ *   + / -: change alarm threshold by 1.0 C.
+ *   e: erase history.
+ *   i: scan I2C bus and print TMP421 ID.
+ *   p/o/t: SSD1673 E-paper diagnostics.
+ *   d/f/g/m/r: alternate SPD2701 diagnostics, select alternate driver, resume.
+ *   u/s/x: SSD1673 RAM-bypass cycle, EPD pin register dump, pin drive test.
+ *   ?: print help.
+ */
+
+#define SMCLK_HZ                    1048576UL
+#define SAMPLE_INTERVAL_SECONDS     3u
+#define ALERT_THRESHOLD_T10         500       /* 50.0 C */
+#define EPD_AUTO_REFRESH_SAMPLES    10u       /* 10 samples * 3 s = about 30 s */
+#define EPD_FAST_REFRESH_DELTA_T10  20        /* Refresh early on >= 2.0 C jump */
+
+/* NTC defaults: 10k NTC, beta=3950, 10k pull-up to VCC, NTC to GND. */
+#define NTC_ADC_INCH                ADC12INCH_5
+#define NTC_PORT_SEL                P6SEL
+#define NTC_PORT_BIT                BIT5
+#define NTC_PULLUP_TO_VCC           1
+
+#define TMP421_REG_LOCAL_MSB        0x00
+#define TMP421_REG_REMOTE_MSB       0x01
+#define TMP421_REG_STATUS           0x08
+#define TMP421_REG_CONFIG1_WRITE    0x09
+#define TMP421_REG_CONV_RATE_WRITE  0x0B
+#define TMP421_REG_LOCAL_LSB        0x10
+#define TMP421_REG_REMOTE_LSB       0x11
+#define TMP421_REG_CHANNEL_WRITE    0x21
+#define TMP421_REG_MANUFACTURER_ID  0xFE
+#define TMP421_REG_DEVICE_ID        0xFF
+#define TMP421_CONFIG_EXTENDED      0x04
+#define TMP421_CHANNEL_LOCAL_REMOTE 0x03
+#define TMP421_MANUFACTURER_ID      0x55
+#define TMP421_DEVICE_ID            0x21
+
+#define INVALID_T10                 ((int16_t)-32768)
+
+/* Reserved main Flash log area. Keep this in sync with lnk_msp430f5529.cmd. */
+#define FLASH_LOG_START             0xC000u
+#define FLASH_LOG_END               0xFE00u
+#define FLASH_SEGMENT_SIZE          0x0200u
+#define RECORD_MAGIC                0xA55Au
+
+#define FLAG_DIE_OK                 0x0001u
+#define FLAG_NTC_OK                 0x0002u
+#define FLAG_TMP_LOCAL_OK           0x0004u
+#define FLAG_TMP_REMOTE_OK          0x0008u
+
+/* E-paper native RAM is 128 x 250. UI coordinates are rotated to 250 x 122. */
+#define EPD_SCREEN_W                250u
+#define EPD_SCREEN_H                122u
+#define EPD_RAM_W_BYTES             16u
+#define EPD_RAM_H                   250u
+#define EPD_BUF_SIZE                (EPD_RAM_W_BYTES * EPD_RAM_H)
+#define EPD_ALT_SCREEN_W            172u
+#define EPD_ALT_SCREEN_H            144u
+#define EPD_ALT_RAM_W_BYTES         18u
+#define EPD_ALT_RAM_H               172u
+#define EPD_ALT_BUF_SIZE            (EPD_ALT_RAM_W_BYTES * EPD_ALT_RAM_H)
+#define HISTORY_ROWS_ON_EPD         5u
+
+#define EPD_BUSY_IN                 P2IN
+#define EPD_BUSY_DIR                P2DIR
+#define EPD_BUSY_REN                P2REN
+#define EPD_BUSY_OUT                P2OUT
+#define EPD_BUSY_SEL                P2SEL
+#define EPD_BUSY_BIT                BIT2
+
+#define EPD_RST_SEL                 P1SEL
+#define EPD_RST_DIR                 P1DIR
+#define EPD_RST_OUT                 P1OUT
+#define EPD_RST_BIT                 BIT4
+
+#define EPD_DC_SEL                  P3SEL
+#define EPD_DC_DIR                  P3DIR
+#define EPD_DC_OUT                  P3OUT
+#define EPD_DC_BIT                  BIT4
+
+#define EPD_CS_SEL                  P3SEL
+#define EPD_CS_DIR                  P3DIR
+#define EPD_CS_OUT                  P3OUT
+#define EPD_CS_BIT                  BIT2
+
+#define EPD_SDI_SEL                 P3SEL
+#define EPD_SDI_DIR                 P3DIR
+#define EPD_SDI_OUT                 P3OUT
+#define EPD_SDI_BIT                 BIT3
+#define EPD_CLK_SEL                 P2SEL
+#define EPD_CLK_DIR                 P2DIR
+#define EPD_CLK_OUT                 P2OUT
+#define EPD_CLK_BIT                 BIT7
+#define EPD_BUSY_TIMEOUT_MS         8000u
+#define EPD_BUSY_START_TIMEOUT_MS   200u
+#define EPD_POST_UPDATE_MS          1500u
+#define EPD_STARTUP_SETTLE_MS       500u
+#define EPD_RESET_PRE_MS            50u
+#define EPD_RESET_LOW_MS            100u
+#define EPD_RESET_HIGH_MS           200u
+#define EPD_UPDATE_CTRL_FULL        0xC7u
+#define EPD_DRIVER_SSD1673          0u
+#define EPD_DRIVER_SPD2701          1u
+
+#define BUZZER_DIR                  P3DIR
+#define BUZZER_OUT                  P3OUT
+#define BUZZER_BIT                  BIT6
+#define BUZZER_FREQ_HZ              2000u
+#define BUZZER_HALF_PERIOD_TICKS    ((uint16_t)(SMCLK_HZ / (BUZZER_FREQ_HZ * 2u)))
+
+#define CAL_ADC_15T30               (*(const uint16_t *)0x1A1A)
+#define CAL_ADC_15T85               (*(const uint16_t *)0x1A1C)
+
+typedef struct {
+    uint16_t adc;
+    int16_t t10;
+} NtcPoint;
+
+typedef struct {
+    int16_t die_t10;
+    int16_t ntc_t10;
+    int16_t tmp_local_t10;
+    int16_t tmp_remote_t10;
+    uint16_t flags;
+} TempSample;
+
+typedef struct {
+    uint16_t magic;
+    uint16_t seq;
+    int16_t die_t10;
+    int16_t ntc_t10;
+    int16_t tmp_local_t10;
+    int16_t tmp_remote_t10;
+    uint16_t flags;
+    uint16_t crc;
+} TempRecord;
+
+#define FLASH_RECORD_COUNT          ((FLASH_LOG_END - FLASH_LOG_START) / sizeof(TempRecord))
+
+static const NtcPoint ntc_table[] = {
+    {3740,  -200},
+    {3629,  -150},
+    {3495,  -100},
+    {3337,   -50},
+    {3156,     0},
+    {2955,    50},
+    {2738,   100},
+    {2510,   150},
+    {2278,   200},
+    {2048,   250},
+    {1825,   300},
+    {1614,   350},
+    {1419,   400},
+    {1241,   450},
+    {1081,   500},
+    { 940,   550},
+    { 815,   600},
+    { 707,   650},
+    { 613,   700},
+    { 532,   750},
+    { 462,   800},
+    { 401,   850},
+    { 350,   900},
+    { 305,   950},
+    { 267,  1000}
+};
+
+static const uint8_t font5x7[96][5] = {
+    {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00},
+    {0x00,0x07,0x00,0x07,0x00}, {0x14,0x7F,0x14,0x7F,0x14},
+    {0x24,0x2A,0x7F,0x2A,0x12}, {0x23,0x13,0x08,0x64,0x62},
+    {0x36,0x49,0x55,0x22,0x50}, {0x00,0x05,0x03,0x00,0x00},
+    {0x00,0x1C,0x22,0x41,0x00}, {0x00,0x41,0x22,0x1C,0x00},
+    {0x14,0x08,0x3E,0x08,0x14}, {0x08,0x08,0x3E,0x08,0x08},
+    {0x00,0x50,0x30,0x00,0x00}, {0x08,0x08,0x08,0x08,0x08},
+    {0x00,0x60,0x60,0x00,0x00}, {0x20,0x10,0x08,0x04,0x02},
+    {0x3E,0x51,0x49,0x45,0x3E}, {0x00,0x42,0x7F,0x40,0x00},
+    {0x42,0x61,0x51,0x49,0x46}, {0x21,0x41,0x45,0x4B,0x31},
+    {0x18,0x14,0x12,0x7F,0x10}, {0x27,0x45,0x45,0x45,0x39},
+    {0x3C,0x4A,0x49,0x49,0x30}, {0x01,0x71,0x09,0x05,0x03},
+    {0x36,0x49,0x49,0x49,0x36}, {0x06,0x49,0x49,0x29,0x1E},
+    {0x00,0x36,0x36,0x00,0x00}, {0x00,0x56,0x36,0x00,0x00},
+    {0x08,0x14,0x22,0x41,0x00}, {0x14,0x14,0x14,0x14,0x14},
+    {0x00,0x41,0x22,0x14,0x08}, {0x02,0x01,0x51,0x09,0x06},
+    {0x32,0x49,0x79,0x41,0x3E}, {0x7E,0x11,0x11,0x11,0x7E},
+    {0x7F,0x49,0x49,0x49,0x36}, {0x3E,0x41,0x41,0x41,0x22},
+    {0x7F,0x41,0x41,0x22,0x1C}, {0x7F,0x49,0x49,0x49,0x41},
+    {0x7F,0x09,0x09,0x09,0x01}, {0x3E,0x41,0x49,0x49,0x7A},
+    {0x7F,0x08,0x08,0x08,0x7F}, {0x00,0x41,0x7F,0x41,0x00},
+    {0x20,0x40,0x41,0x3F,0x01}, {0x7F,0x08,0x14,0x22,0x41},
+    {0x7F,0x40,0x40,0x40,0x40}, {0x7F,0x02,0x0C,0x02,0x7F},
+    {0x7F,0x04,0x08,0x10,0x7F}, {0x3E,0x41,0x41,0x41,0x3E},
+    {0x7F,0x09,0x09,0x09,0x06}, {0x3E,0x41,0x51,0x21,0x5E},
+    {0x7F,0x09,0x19,0x29,0x46}, {0x46,0x49,0x49,0x49,0x31},
+    {0x01,0x01,0x7F,0x01,0x01}, {0x3F,0x40,0x40,0x40,0x3F},
+    {0x1F,0x20,0x40,0x20,0x1F}, {0x3F,0x40,0x38,0x40,0x3F},
+    {0x63,0x14,0x08,0x14,0x63}, {0x07,0x08,0x70,0x08,0x07},
+    {0x61,0x51,0x49,0x45,0x43}, {0x00,0x7F,0x41,0x41,0x00},
+    {0x02,0x04,0x08,0x10,0x20}, {0x00,0x41,0x41,0x7F,0x00},
+    {0x04,0x02,0x01,0x02,0x04}, {0x40,0x40,0x40,0x40,0x40},
+    {0x00,0x01,0x02,0x04,0x00}, {0x20,0x54,0x54,0x54,0x78},
+    {0x7F,0x48,0x44,0x44,0x38}, {0x38,0x44,0x44,0x44,0x20},
+    {0x38,0x44,0x44,0x48,0x7F}, {0x38,0x54,0x54,0x54,0x18},
+    {0x08,0x7E,0x09,0x01,0x02}, {0x0C,0x52,0x52,0x52,0x3E},
+    {0x7F,0x08,0x04,0x04,0x78}, {0x00,0x44,0x7D,0x40,0x00},
+    {0x20,0x40,0x44,0x3D,0x00}, {0x7F,0x10,0x28,0x44,0x00},
+    {0x00,0x41,0x7F,0x40,0x00}, {0x7C,0x04,0x18,0x04,0x78},
+    {0x7C,0x08,0x04,0x04,0x78}, {0x38,0x44,0x44,0x44,0x38},
+    {0x7C,0x14,0x14,0x14,0x08}, {0x08,0x14,0x14,0x18,0x7C},
+    {0x7C,0x08,0x04,0x04,0x08}, {0x48,0x54,0x54,0x54,0x20},
+    {0x04,0x3F,0x44,0x40,0x20}, {0x3C,0x40,0x40,0x20,0x7C},
+    {0x1C,0x20,0x40,0x20,0x1C}, {0x3C,0x40,0x30,0x40,0x3C},
+    {0x44,0x28,0x10,0x28,0x44}, {0x0C,0x50,0x50,0x50,0x3C},
+    {0x44,0x64,0x54,0x4C,0x44}, {0x00,0x08,0x36,0x41,0x00},
+    {0x00,0x00,0x7F,0x00,0x00}, {0x00,0x41,0x36,0x08,0x00},
+    {0x10,0x08,0x08,0x10,0x08}, {0x00,0x06,0x09,0x09,0x06}
+};
+
+static const uint8_t epd_lut[29] = {
+    0x50, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x11, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x0F, 0x0F, 0x0F,
+    0x0F, 0x0F, 0x0F, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+static const uint8_t epd_alt_lut[90] = {
+    0x82, 0x00, 0x00, 0x00, 0xAA, 0x00, 0x00, 0x00,
+    0xAA, 0xAA, 0x00, 0x00, 0xAA, 0xAA, 0xAA, 0x00,
+    0x55, 0xAA, 0xAA, 0x00, 0x55, 0x55, 0x55, 0x55,
+    0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
+    0xAA, 0xAA, 0xAA, 0xAA, 0x15, 0x15, 0x15, 0x15,
+    0x05, 0x05, 0x05, 0x05, 0x01, 0x01, 0x01, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x41, 0x45, 0xF1, 0xFF, 0x5F, 0x55, 0x01, 0x00,
+    0x00, 0x00
+};
+
+static volatile uint8_t g_sample_due = 1;
+static volatile uint8_t g_second_count = 0;
+static volatile uint8_t g_uart_cmd = 0;
+
+static uint8_t g_sample_interval = SAMPLE_INTERVAL_SECONDS;
+static int16_t g_threshold_t10 = ALERT_THRESHOLD_T10;
+static uint16_t g_flash_next_index = 0;
+static uint16_t g_next_seq = 0;
+static uint16_t g_history_page = 0;
+static uint8_t g_buzzer_on = 0;
+static uint8_t g_tmp421_addr = 0;
+static uint16_t g_last_ntc_adc = 0;
+static uint8_t g_epd_auto_update = 1;
+static uint8_t g_epd_driver = EPD_DRIVER_SSD1673;
+static uint8_t g_epd_has_last_sample = 0;
+static uint8_t g_epd_samples_since_refresh = EPD_AUTO_REFRESH_SAMPLES;
+static TempSample g_epd_last_sample;
+static uint8_t epd_buf[EPD_BUF_SIZE];
+
+static void delay_ms(uint16_t ms);
+static void uart_putc(char c);
+static void uart_puts(const char *s);
+static void uart_print_u16(uint16_t v);
+static void uart_print_hex_u8(uint8_t v);
+static void uart_print_i16_t10(int16_t t10);
+static void uart_print_sample(const TempSample *s);
+static void uart_print_help(void);
+static void i2c_print_scan(void);
+static void flash_scan(void);
+static void flash_log_sample(const TempSample *s);
+static void flash_erase_log(void);
+static void print_history_uart(void);
+static uint16_t history_count(void);
+static uint8_t history_get(uint16_t index, TempRecord *out);
+static void epd_init(void);
+static void epd_show_current(const TempSample *s);
+static void epd_show_current_auto(const TempSample *s);
+static void epd_show_history(uint16_t start);
+static void epd_force_next_current_refresh(void);
+static void epd_test_pattern(void);
+static void epd_test_white(void);
+static void epd_test_text(void);
+static void epd_test_bypass_cycle(void);
+static void epd_print_pins(void);
+static void epd_pin_drive_test(void);
+static void epd_alt_test_black(void);
+static void epd_alt_test_white(void);
+static void epd_alt_test_text(void);
+static void epd_alt_show_current(const TempSample *s);
+static void epd_alt_show_history(uint16_t start);
+static void buzzer_set(uint8_t on);
+static void collect_sample(TempSample *s);
+
+static void delay_ms(uint16_t ms)
+{
+    while (ms--) {
+        __delay_cycles(SMCLK_HZ / 1000u);
+    }
+}
+
+static void clock_init(void)
+{
+    UCSCTL3 = SELREF_2;
+    UCSCTL4 = SELA_2 | SELS_4 | SELM_4;
+    __bis_SR_register(SCG0);
+    UCSCTL0 = 0;
+    UCSCTL1 = DCORSEL_2;
+    UCSCTL2 = FLLD_1 | 31;
+    __bic_SR_register(SCG0);
+    delay_ms(250);
+}
+
+static void gpio_init(void)
+{
+    P1DIR |= BIT0;
+    P1OUT &= ~BIT0;
+
+    P8DIR |= BIT1;
+    P8OUT &= ~BIT1;
+
+    BUZZER_DIR |= BUZZER_BIT;
+    BUZZER_OUT &= ~BUZZER_BIT;
+
+    NTC_PORT_SEL |= NTC_PORT_BIT;
+}
+
+static void uart_init(void)
+{
+    P4SEL |= BIT4 | BIT5;
+    UCA1CTL1 |= UCSWRST;
+    UCA1CTL1 |= UCSSEL_2;
+    UCA1BR0 = 6;
+    UCA1BR1 = 0;
+    UCA1MCTL = UCBRF_13 | UCOS16;
+    UCA1CTL1 &= ~UCSWRST;
+    UCA1IE |= UCRXIE;
+}
+
+static void uart_putc(char c)
+{
+    while (!(UCA1IFG & UCTXIFG)) {
+        ;
+    }
+    UCA1TXBUF = (uint8_t)c;
+}
+
+static void uart_puts(const char *s)
+{
+    while (*s) {
+        uart_putc(*s++);
+    }
+}
+
+static void uart_print_u16(uint16_t v)
+{
+    char buf[6];
+    uint8_t i;
+
+    if (v == 0) {
+        uart_putc('0');
+        return;
+    }
+
+    i = 0;
+    while (v > 0 && i < sizeof(buf)) {
+        buf[i++] = (char)('0' + (v % 10));
+        v = (uint16_t)(v / 10);
+    }
+    while (i > 0) {
+        uart_putc(buf[--i]);
+    }
+}
+
+static void uart_print_hex_u8(uint8_t v)
+{
+    const char hex[] = "0123456789ABCDEF";
+
+    uart_puts("0x");
+    uart_putc(hex[(v >> 4) & 0x0F]);
+    uart_putc(hex[v & 0x0F]);
+}
+
+static void uart_print_i16_t10(int16_t t10)
+{
+    uint16_t a;
+
+    if (t10 == INVALID_T10) {
+        uart_puts("--.-");
+        return;
+    }
+
+    if (t10 < 0) {
+        uart_putc('-');
+        a = (uint16_t)(-t10);
+    } else {
+        a = (uint16_t)t10;
+    }
+
+    uart_print_u16((uint16_t)(a / 10));
+    uart_putc('.');
+    uart_putc((char)('0' + (a % 10)));
+}
+
+static char *append_str(char *p, const char *s)
+{
+    while (*s) {
+        *p++ = *s++;
+    }
+    *p = 0;
+    return p;
+}
+
+static char *append_u16(char *p, uint16_t v)
+{
+    char buf[6];
+    uint8_t i;
+
+    if (v == 0) {
+        *p++ = '0';
+        *p = 0;
+        return p;
+    }
+
+    i = 0;
+    while (v > 0 && i < sizeof(buf)) {
+        buf[i++] = (char)('0' + (v % 10));
+        v = (uint16_t)(v / 10);
+    }
+    while (i > 0) {
+        *p++ = buf[--i];
+    }
+    *p = 0;
+    return p;
+}
+
+static char *append_t10(char *p, int16_t t10)
+{
+    uint16_t a;
+
+    if (t10 == INVALID_T10) {
+        return append_str(p, "--.-");
+    }
+
+    if (t10 < 0) {
+        *p++ = '-';
+        a = (uint16_t)(-t10);
+    } else {
+        a = (uint16_t)t10;
+    }
+
+    p = append_u16(p, (uint16_t)(a / 10));
+    *p++ = '.';
+    *p++ = (char)('0' + (a % 10));
+    *p = 0;
+    return p;
+}
+
+static uint8_t temp_is_valid(int16_t t10)
+{
+    return (uint8_t)(t10 != INVALID_T10);
+}
+
+static uint8_t sample_over_threshold(const TempSample *s)
+{
+    if (temp_is_valid(s->die_t10) && s->die_t10 >= g_threshold_t10) {
+        return 1;
+    }
+    if (temp_is_valid(s->ntc_t10) && s->ntc_t10 >= g_threshold_t10) {
+        return 1;
+    }
+    if (temp_is_valid(s->tmp_local_t10) && s->tmp_local_t10 >= g_threshold_t10) {
+        return 1;
+    }
+    if (temp_is_valid(s->tmp_remote_t10) && s->tmp_remote_t10 >= g_threshold_t10) {
+        return 1;
+    }
+    return 0;
+}
+
+static void uart_print_sample(const TempSample *s)
+{
+    uart_puts("Now  DIE=");
+    uart_print_i16_t10(s->die_t10);
+    uart_puts("C NTC=");
+    uart_print_i16_t10(s->ntc_t10);
+    uart_puts("C TMP=");
+    uart_print_i16_t10(s->tmp_local_t10);
+    uart_puts("C REM=");
+    uart_print_i16_t10(s->tmp_remote_t10);
+    uart_puts("C ALM=");
+    uart_print_i16_t10(g_threshold_t10);
+    uart_puts("C\r\n");
+}
+
+static void uart_print_help(void)
+{
+    uart_puts("\r\nCommands: h=history, n=next page, c=sample, +=alarm up, -=alarm down, e=erase, i=i2c, p/o/t=ssd epd, u=bypass, s=pins, x=pin test, d/f/g=alt epd, m=use alt, r=resume, ?=help\r\n");
+}
+
+static void adc_power_reference(uint8_t on)
+{
+    if (on) {
+        REFCTL0 = REFMSTR | REFVSEL_0 | REFON;
+        delay_ms(2);
+    } else {
+        REFCTL0 = REFMSTR;
+    }
+}
+
+static uint16_t adc_read_once(uint16_t inch, uint16_t sref, uint8_t use_internal_ref)
+{
+    uint16_t value;
+    uint16_t timeout;
+
+    if (use_internal_ref) {
+        adc_power_reference(1);
+    }
+
+    ADC12CTL0 &= ~ADC12ENC;
+    ADC12CTL0 = ADC12SHT0_15 | ADC12ON;
+    ADC12CTL1 = ADC12SHP;
+    ADC12MCTL0 = sref | inch;
+    ADC12CTL0 |= ADC12ENC | ADC12SC;
+
+    timeout = 60000u;
+    while ((ADC12CTL1 & ADC12BUSY) && timeout > 0) {
+        timeout--;
+    }
+
+    value = ADC12MEM0;
+    ADC12CTL0 &= ~ADC12ENC;
+    ADC12CTL0 &= ~ADC12ON;
+
+    if (use_internal_ref) {
+        adc_power_reference(0);
+    }
+
+    return value;
+}
+
+static uint16_t adc_read_avg(uint16_t inch, uint16_t sref, uint8_t use_internal_ref)
+{
+    uint8_t i;
+    uint32_t sum;
+
+    sum = 0;
+    for (i = 0; i < 4; i++) {
+        sum += adc_read_once(inch, sref, use_internal_ref);
+    }
+    return (uint16_t)(sum / 4u);
+}
+
+static int16_t die_adc_to_t10(uint16_t adc)
+{
+    uint16_t cal30;
+    uint16_t cal85;
+    long t10;
+    long mv;
+
+    cal30 = CAL_ADC_15T30;
+    cal85 = CAL_ADC_15T85;
+
+    if (cal30 != 0xFFFFu && cal85 != 0xFFFFu && cal85 > cal30) {
+        t10 = ((long)adc - (long)cal30) * 550L;
+        t10 = t10 / ((long)cal85 - (long)cal30) + 300L;
+        return (int16_t)t10;
+    }
+
+    mv = ((long)adc * 1500L) / 4095L;
+    t10 = ((mv - 986L) * 1000L) / 355L;
+    return (int16_t)t10;
+}
+
+static int16_t ntc_adc_to_t10(uint16_t adc)
+{
+    uint8_t i;
+    uint16_t a0;
+    uint16_t a1;
+    int16_t t0;
+    int16_t t1;
+    long t;
+    uint16_t scaled_adc;
+    const uint8_t n = (uint8_t)(sizeof(ntc_table) / sizeof(ntc_table[0]));
+
+#if NTC_PULLUP_TO_VCC
+    scaled_adc = adc;
+#else
+    scaled_adc = (uint16_t)(4095u - adc);
+#endif
+
+    if (scaled_adc >= ntc_table[0].adc) {
+        return ntc_table[0].t10;
+    }
+    if (scaled_adc <= ntc_table[n - 1u].adc) {
+        return ntc_table[n - 1u].t10;
+    }
+
+    for (i = 0; i < (uint8_t)(n - 1u); i++) {
+        a0 = ntc_table[i].adc;
+        a1 = ntc_table[i + 1u].adc;
+        if (scaled_adc <= a0 && scaled_adc >= a1) {
+            t0 = ntc_table[i].t10;
+            t1 = ntc_table[i + 1u].t10;
+            t = (long)t0 + ((long)scaled_adc - (long)a0) * ((long)t1 - (long)t0) /
+                ((long)a1 - (long)a0);
+            return (int16_t)t;
+        }
+    }
+
+    return INVALID_T10;
+}
+
+static void i2c_init(void)
+{
+    P3SEL |= BIT0 | BIT1;
+    UCB0CTL1 |= UCSWRST;
+    UCB0CTL0 = UCMST | UCMODE_3 | UCSYNC;
+    UCB0CTL1 = UCSWRST | UCSSEL_2;
+    UCB0BR0 = 10;
+    UCB0BR1 = 0;
+    UCB0CTL1 &= ~UCSWRST;
+}
+
+static uint8_t i2c_wait_bus_free(void)
+{
+    uint16_t timeout;
+
+    timeout = 60000u;
+    while ((UCB0STAT & UCBBUSY) && timeout > 0) {
+        timeout--;
+    }
+    return (uint8_t)(timeout > 0);
+}
+
+static uint8_t i2c_check_nack(void)
+{
+    if (UCB0IFG & UCNACKIFG) {
+        UCB0IFG &= ~UCNACKIFG;
+        UCB0CTL1 |= UCTXSTP;
+        return 1;
+    }
+    return 0;
+}
+
+static uint8_t i2c_wait_txifg(void)
+{
+    uint16_t timeout;
+
+    timeout = 60000u;
+    while (!(UCB0IFG & UCTXIFG) && timeout > 0) {
+        if (i2c_check_nack()) {
+            return 0;
+        }
+        timeout--;
+    }
+    return (uint8_t)(timeout > 0);
+}
+
+static uint8_t i2c_wait_rxifg(void)
+{
+    uint16_t timeout;
+
+    timeout = 60000u;
+    while (!(UCB0IFG & UCRXIFG) && timeout > 0) {
+        if (i2c_check_nack()) {
+            return 0;
+        }
+        timeout--;
+    }
+    return (uint8_t)(timeout > 0);
+}
+
+static uint8_t i2c_wait_stop(void)
+{
+    uint16_t timeout;
+
+    timeout = 60000u;
+    while ((UCB0CTL1 & UCTXSTP) && timeout > 0) {
+        timeout--;
+    }
+    return (uint8_t)(timeout > 0);
+}
+
+static uint8_t i2c_probe(uint8_t addr)
+{
+    uint16_t timeout;
+    uint8_t ack;
+
+    if (!i2c_wait_bus_free()) {
+        return 0;
+    }
+
+    UCB0I2CSA = addr;
+    UCB0CTL1 |= UCTR | UCTXSTT;
+
+    timeout = 60000u;
+    ack = 0;
+    while (timeout > 0) {
+        if (UCB0IFG & UCNACKIFG) {
+            UCB0IFG &= ~UCNACKIFG;
+            ack = 0;
+            break;
+        }
+        if (UCB0IFG & UCTXIFG) {
+            ack = 1;
+            break;
+        }
+        timeout--;
+    }
+
+    UCB0CTL1 |= UCTXSTP;
+    (void)i2c_wait_stop();
+    return ack;
+}
+
+static uint8_t i2c_write_reg(uint8_t addr, uint8_t reg, uint8_t value)
+{
+    if (!i2c_wait_bus_free()) {
+        return 0;
+    }
+
+    UCB0I2CSA = addr;
+    UCB0CTL1 |= UCTR | UCTXSTT;
+    if (!i2c_wait_txifg()) {
+        return 0;
+    }
+    UCB0TXBUF = reg;
+    if (!i2c_wait_txifg()) {
+        return 0;
+    }
+    UCB0TXBUF = value;
+    if (!i2c_wait_txifg()) {
+        return 0;
+    }
+    UCB0CTL1 |= UCTXSTP;
+    return i2c_wait_stop();
+}
+
+static uint8_t i2c_read_reg(uint8_t addr, uint8_t reg, uint8_t *value)
+{
+    uint16_t timeout;
+
+    if (!i2c_wait_bus_free()) {
+        return 0;
+    }
+
+    UCB0I2CSA = addr;
+    UCB0CTL1 |= UCTR | UCTXSTT;
+    if (!i2c_wait_txifg()) {
+        return 0;
+    }
+    UCB0TXBUF = reg;
+    if (!i2c_wait_txifg()) {
+        return 0;
+    }
+
+    UCB0CTL1 &= ~UCTR;
+    UCB0CTL1 |= UCTXSTT;
+
+    timeout = 60000u;
+    while ((UCB0CTL1 & UCTXSTT) && timeout > 0) {
+        if (i2c_check_nack()) {
+            return 0;
+        }
+        timeout--;
+    }
+    if (timeout == 0) {
+        UCB0CTL1 |= UCTXSTP;
+        return 0;
+    }
+
+    UCB0CTL1 |= UCTXSTP;
+    if (!i2c_wait_rxifg()) {
+        return 0;
+    }
+    *value = UCB0RXBUF;
+    return i2c_wait_stop();
+}
+
+static uint8_t tmp421_is_device_id(uint8_t id)
+{
+    return (uint8_t)(id == 0x21u || id == 0x22u || id == 0x23u ||
+                     id == 0x41u || id == 0x42u);
+}
+
+static uint8_t tmp421_detect(void)
+{
+    const uint8_t candidates[] = {0x2Au, 0x4Cu, 0x4Du, 0x4Eu, 0x4Fu};
+    uint8_t i;
+    uint8_t manf;
+    uint8_t dev;
+    uint8_t local;
+
+    for (i = 0; i < (uint8_t)sizeof(candidates); i++) {
+        if (!i2c_probe(candidates[i])) {
+            continue;
+        }
+        if (i2c_read_reg(candidates[i], TMP421_REG_MANUFACTURER_ID, &manf) &&
+            i2c_read_reg(candidates[i], TMP421_REG_DEVICE_ID, &dev) &&
+            manf == TMP421_MANUFACTURER_ID && tmp421_is_device_id(dev)) {
+            g_tmp421_addr = candidates[i];
+            return 1;
+        }
+        if (candidates[i] == 0x2Au &&
+            i2c_read_reg(candidates[i], TMP421_REG_LOCAL_MSB, &local)) {
+            g_tmp421_addr = candidates[i];
+            return 1;
+        }
+        if (candidates[i] != 0x2Au) {
+            continue;
+        }
+    }
+
+    g_tmp421_addr = 0;
+    return 0;
+}
+
+static void i2c_print_scan(void)
+{
+    uint8_t addr;
+    uint8_t manf;
+    uint8_t dev;
+
+    uart_puts("I2C:");
+    for (addr = 0x08u; addr < 0x78u; addr++) {
+        if (i2c_probe(addr)) {
+            uart_putc(' ');
+            uart_print_hex_u8(addr);
+        }
+    }
+    uart_puts("\r\n");
+
+    if (g_tmp421_addr) {
+        uart_puts("TMP421 addr=");
+        uart_print_hex_u8(g_tmp421_addr);
+        if (i2c_read_reg(g_tmp421_addr, TMP421_REG_MANUFACTURER_ID, &manf) &&
+            i2c_read_reg(g_tmp421_addr, TMP421_REG_DEVICE_ID, &dev)) {
+            uart_puts(" manf=");
+            uart_print_hex_u8(manf);
+            uart_puts(" dev=");
+            uart_print_hex_u8(dev);
+        }
+        uart_puts("\r\n");
+    } else {
+        uart_puts("TMP421 not detected\r\n");
+    }
+
+    uart_puts("NTC P6.5/A5 raw=");
+    uart_print_u16(g_last_ntc_adc);
+    uart_puts("\r\n");
+}
+
+static void tmp421_init(void)
+{
+    if (!tmp421_detect()) {
+        return;
+    }
+
+    (void)i2c_write_reg(g_tmp421_addr, TMP421_REG_CONFIG1_WRITE, TMP421_CONFIG_EXTENDED);
+    (void)i2c_write_reg(g_tmp421_addr, TMP421_REG_CHANNEL_WRITE, TMP421_CHANNEL_LOCAL_REMOTE);
+    (void)i2c_write_reg(g_tmp421_addr, TMP421_REG_CONV_RATE_WRITE, 0x07);
+}
+
+static uint8_t tmp421_read_t10(uint8_t msb_reg, uint8_t lsb_reg, int16_t *t10)
+{
+    uint8_t msb;
+    uint8_t lsb;
+    uint8_t frac;
+    long value;
+
+    if (!g_tmp421_addr) {
+        *t10 = INVALID_T10;
+        return 0;
+    }
+
+    if (!i2c_read_reg(g_tmp421_addr, msb_reg, &msb)) {
+        *t10 = INVALID_T10;
+        return 0;
+    }
+    if (!i2c_read_reg(g_tmp421_addr, lsb_reg, &lsb)) {
+        lsb = 0;
+    }
+    if (msb_reg == TMP421_REG_REMOTE_MSB && (lsb & 0x03u)) {
+        *t10 = INVALID_T10;
+        return 0;
+    }
+
+    frac = (uint8_t)(lsb >> 4);
+    value = ((long)msb * 160L + (long)frac * 10L + 8L) / 16L;
+    value -= 640L;
+    *t10 = (int16_t)value;
+    return 1;
+}
+
+static uint16_t record_crc(const TempRecord *r)
+{
+    const uint16_t *w;
+    uint8_t i;
+    uint16_t crc;
+
+    w = (const uint16_t *)r;
+    crc = 0x5A5Au;
+    for (i = 0; i < (uint8_t)((sizeof(TempRecord) / 2u) - 1u); i++) {
+        crc = (uint16_t)((crc << 1) | (crc >> 15));
+        crc ^= w[i];
+    }
+    return crc;
+}
+
+static uint8_t record_valid(const TempRecord *r)
+{
+    if (r->magic != RECORD_MAGIC) {
+        return 0;
+    }
+    return (uint8_t)(record_crc(r) == r->crc);
+}
+
+static void flash_erase_segment(uint16_t addr)
+{
+    while (FCTL3 & BUSY) {
+        ;
+    }
+    FCTL3 = FWKEY;
+    FCTL1 = FWKEY | ERASE;
+    *(volatile uint16_t *)addr = 0;
+    while (FCTL3 & BUSY) {
+        ;
+    }
+    FCTL1 = FWKEY;
+    FCTL3 = FWKEY | LOCK;
+}
+
+static void flash_erase_log(void)
+{
+    uint16_t addr;
+
+    __disable_interrupt();
+    for (addr = FLASH_LOG_START; addr < FLASH_LOG_END; addr = (uint16_t)(addr + FLASH_SEGMENT_SIZE)) {
+        flash_erase_segment(addr);
+    }
+    g_flash_next_index = 0;
+    g_next_seq = 0;
+    __enable_interrupt();
+}
+
+static void flash_write_record(uint16_t index, const TempRecord *r)
+{
+    const uint16_t *src;
+    volatile uint16_t *dst;
+    uint8_t words;
+    uint8_t i;
+
+    src = (const uint16_t *)r;
+    dst = (volatile uint16_t *)(FLASH_LOG_START + index * sizeof(TempRecord));
+    words = (uint8_t)(sizeof(TempRecord) / 2u);
+
+    __disable_interrupt();
+    while (FCTL3 & BUSY) {
+        ;
+    }
+    FCTL3 = FWKEY;
+    FCTL1 = FWKEY | WRT;
+    for (i = 0; i < words; i++) {
+        dst[i] = src[i];
+    }
+    while (FCTL3 & BUSY) {
+        ;
+    }
+    FCTL1 = FWKEY;
+    FCTL3 = FWKEY | LOCK;
+    __enable_interrupt();
+}
+
+static void flash_scan(void)
+{
+    uint16_t i;
+    const TempRecord *r;
+
+    g_flash_next_index = 0;
+    g_next_seq = 0;
+
+    for (i = 0; i < FLASH_RECORD_COUNT; i++) {
+        r = (const TempRecord *)(FLASH_LOG_START + i * sizeof(TempRecord));
+        if (r->magic == 0xFFFFu) {
+            g_flash_next_index = i;
+            return;
+        }
+        if (!record_valid(r)) {
+            g_flash_next_index = i;
+            return;
+        }
+        g_flash_next_index = (uint16_t)(i + 1u);
+        g_next_seq = (uint16_t)(r->seq + 1u);
+    }
+}
+
+static void flash_log_sample(const TempSample *s)
+{
+    TempRecord r;
+
+    if (g_flash_next_index >= FLASH_RECORD_COUNT) {
+        flash_erase_log();
+    }
+
+    r.magic = RECORD_MAGIC;
+    r.seq = g_next_seq++;
+    r.die_t10 = s->die_t10;
+    r.ntc_t10 = s->ntc_t10;
+    r.tmp_local_t10 = s->tmp_local_t10;
+    r.tmp_remote_t10 = s->tmp_remote_t10;
+    r.flags = s->flags;
+    r.crc = record_crc(&r);
+
+    flash_write_record(g_flash_next_index, &r);
+    g_flash_next_index++;
+}
+
+static uint16_t history_count(void)
+{
+    uint16_t i;
+    const TempRecord *r;
+
+    for (i = 0; i < FLASH_RECORD_COUNT; i++) {
+        r = (const TempRecord *)(FLASH_LOG_START + i * sizeof(TempRecord));
+        if (!record_valid(r)) {
+            return i;
+        }
+    }
+    return FLASH_RECORD_COUNT;
+}
+
+static uint8_t history_get(uint16_t index, TempRecord *out)
+{
+    const TempRecord *r;
+
+    if (index >= FLASH_RECORD_COUNT) {
+        return 0;
+    }
+    r = (const TempRecord *)(FLASH_LOG_START + index * sizeof(TempRecord));
+    if (!record_valid(r)) {
+        return 0;
+    }
+    *out = *r;
+    return 1;
+}
+
+static void print_record_uart(const TempRecord *r)
+{
+    uart_putc('#');
+    uart_print_u16(r->seq);
+    uart_puts(" DIE=");
+    uart_print_i16_t10(r->die_t10);
+    uart_puts("C NTC=");
+    uart_print_i16_t10(r->ntc_t10);
+    uart_puts("C TMP=");
+    uart_print_i16_t10(r->tmp_local_t10);
+    uart_puts("C REM=");
+    uart_print_i16_t10(r->tmp_remote_t10);
+    uart_puts("C\r\n");
+}
+
+static void print_history_uart(void)
+{
+    uint16_t i;
+    uint16_t count;
+    TempRecord r;
+
+    count = history_count();
+    uart_puts("\r\nHistory count=");
+    uart_print_u16(count);
+    uart_puts("\r\n");
+
+    for (i = 0; i < count; i++) {
+        if (history_get(i, &r)) {
+            print_record_uart(&r);
+        }
+    }
+}
+
+static void epd_bus_idle(void)
+{
+    EPD_CS_OUT |= EPD_CS_BIT;
+    EPD_CLK_OUT &= ~EPD_CLK_BIT;
+    EPD_SDI_OUT &= ~EPD_SDI_BIT;
+    EPD_DC_OUT |= EPD_DC_BIT;
+}
+
+static void spi0_init(void)
+{
+    EPD_BUSY_SEL &= ~EPD_BUSY_BIT;
+    EPD_RST_SEL &= ~EPD_RST_BIT;
+    EPD_DC_SEL &= ~EPD_DC_BIT;
+    EPD_CS_SEL &= ~EPD_CS_BIT;
+    EPD_SDI_SEL &= ~EPD_SDI_BIT;
+    EPD_CLK_SEL &= ~EPD_CLK_BIT;
+
+    EPD_RST_OUT |= EPD_RST_BIT;
+    epd_bus_idle();
+
+    EPD_BUSY_DIR &= ~EPD_BUSY_BIT;
+    EPD_RST_DIR |= EPD_RST_BIT;
+    EPD_DC_DIR |= EPD_DC_BIT;
+    EPD_CS_DIR |= EPD_CS_BIT;
+    EPD_SDI_DIR |= EPD_SDI_BIT;
+    EPD_CLK_DIR |= EPD_CLK_BIT;
+
+    EPD_RST_OUT |= EPD_RST_BIT;
+    epd_bus_idle();
+}
+
+static void epd_spi_delay(void)
+{
+    __delay_cycles(8);
+}
+
+static void spi0_write(uint8_t value)
+{
+    uint8_t bit;
+
+    for (bit = 0; bit < 8u; bit++) {
+        if (value & 0x80u) {
+            EPD_SDI_OUT |= EPD_SDI_BIT;
+        } else {
+            EPD_SDI_OUT &= ~EPD_SDI_BIT;
+        }
+        epd_spi_delay();
+        EPD_CLK_OUT |= EPD_CLK_BIT;
+        epd_spi_delay();
+        EPD_CLK_OUT &= ~EPD_CLK_BIT;
+        value = (uint8_t)(value << 1);
+        epd_spi_delay();
+    }
+}
+
+static void epd_select(uint8_t selected)
+{
+    if (selected) {
+        EPD_CS_OUT &= ~EPD_CS_BIT;
+    } else {
+        EPD_CS_OUT |= EPD_CS_BIT;
+    }
+}
+
+static void epd_cmd(uint8_t cmd)
+{
+    epd_select(0);
+    epd_select(1);
+    EPD_CLK_OUT &= ~EPD_CLK_BIT;
+    EPD_DC_OUT &= ~EPD_DC_BIT;
+    spi0_write(cmd);
+    epd_select(0);
+}
+
+static void epd_data(uint8_t data)
+{
+    epd_select(0);
+    epd_select(1);
+    EPD_CLK_OUT &= ~EPD_CLK_BIT;
+    EPD_DC_OUT |= EPD_DC_BIT;
+    spi0_write(data);
+    epd_select(0);
+}
+
+static uint8_t epd_wait_busy(uint16_t timeout_ms)
+{
+    while ((EPD_BUSY_IN & EPD_BUSY_BIT) && timeout_ms > 0) {
+        delay_ms(1);
+        timeout_ms--;
+    }
+    if (EPD_BUSY_IN & EPD_BUSY_BIT) {
+        return 0;
+    }
+    delay_ms(20);
+    return 1;
+}
+
+static uint8_t epd_wait_update_done(void)
+{
+    uint16_t timeout_ms;
+    uint8_t saw_busy;
+
+    timeout_ms = EPD_BUSY_START_TIMEOUT_MS;
+    saw_busy = 0;
+    while (timeout_ms > 0) {
+        if (EPD_BUSY_IN & EPD_BUSY_BIT) {
+            saw_busy = 1;
+            break;
+        }
+        delay_ms(1);
+        timeout_ms--;
+    }
+
+    if (saw_busy) {
+        if (!epd_wait_busy(EPD_BUSY_TIMEOUT_MS)) {
+            return 0;
+        }
+    } else {
+        delay_ms(EPD_POST_UPDATE_MS);
+    }
+
+    delay_ms(EPD_POST_UPDATE_MS);
+    return saw_busy;
+}
+
+static void epd_reset(void)
+{
+    epd_bus_idle();
+    EPD_RST_OUT |= EPD_RST_BIT;
+    delay_ms(EPD_RESET_PRE_MS);
+    EPD_RST_OUT &= ~EPD_RST_BIT;
+    delay_ms(EPD_RESET_LOW_MS);
+    EPD_RST_OUT |= EPD_RST_BIT;
+    delay_ms(EPD_RESET_HIGH_MS);
+    epd_bus_idle();
+}
+
+static uint8_t epd_soft_reset(void)
+{
+    uint16_t timeout_ms;
+    uint8_t saw_busy;
+
+    epd_cmd(0x12);
+    delay_ms(1);
+
+    timeout_ms = EPD_BUSY_START_TIMEOUT_MS;
+    saw_busy = 0;
+    while (timeout_ms > 0) {
+        if (EPD_BUSY_IN & EPD_BUSY_BIT) {
+            saw_busy = 1;
+            break;
+        }
+        delay_ms(1);
+        timeout_ms--;
+    }
+
+    if (saw_busy) {
+        return epd_wait_busy(EPD_BUSY_TIMEOUT_MS);
+    }
+
+    delay_ms(100);
+    return 1;
+}
+
+static void epd_recover_from_unknown_state(void)
+{
+    spi0_init();
+    delay_ms(EPD_STARTUP_SETTLE_MS);
+    epd_reset();
+    (void)epd_wait_busy(EPD_BUSY_TIMEOUT_MS);
+    (void)epd_soft_reset();
+    (void)epd_wait_busy(EPD_BUSY_TIMEOUT_MS);
+}
+
+static void epd_write_lut(void)
+{
+    uint8_t i;
+
+    epd_cmd(0x32);
+    for (i = 0; i < sizeof(epd_lut); i++) {
+        epd_data(epd_lut[i]);
+    }
+}
+
+static void epd_alt_write_lut(void)
+{
+    uint8_t i;
+
+    epd_cmd(0x32);
+    for (i = 0; i < sizeof(epd_alt_lut); i++) {
+        epd_data(epd_alt_lut[i]);
+    }
+}
+
+static void epd_set_ram_area(void)
+{
+    epd_cmd(0x11);
+    epd_data(0x01);
+    epd_cmd(0x44);
+    epd_data(0x00);
+    epd_data(0x0F);
+    epd_cmd(0x45);
+    epd_data(0xF9);
+    epd_data(0x00);
+}
+
+static void epd_set_ram_cursor(void)
+{
+    epd_cmd(0x4E);
+    epd_data(0x00);
+    epd_cmd(0x4F);
+    epd_data(0xF9);
+}
+
+static void epd_alt_set_ram_area(void)
+{
+    epd_cmd(0x11);
+    epd_data(0x03);
+    epd_cmd(0x44);
+    epd_data(0x00);
+    epd_data(0x11);
+    epd_cmd(0x45);
+    epd_data(0x00);
+    epd_data(0xAB);
+    epd_cmd(0x4E);
+    epd_data(0x00);
+    epd_cmd(0x4F);
+    epd_data(0xAB);
+}
+
+static uint8_t epd_update_with_ctrl(uint8_t ctrl)
+{
+    uint8_t saw_busy;
+
+    epd_cmd(0x22);
+    epd_data(ctrl);
+    epd_cmd(0x20);
+    delay_ms(1);
+    saw_busy = epd_wait_update_done();
+    return saw_busy;
+}
+
+static uint8_t epd_update(void)
+{
+    return epd_update_with_ctrl(EPD_UPDATE_CTRL_FULL);
+}
+
+static uint8_t epd_alt_update(void)
+{
+    uint8_t saw_busy;
+
+    epd_cmd(0x21);
+    epd_data(0x83);
+    epd_cmd(0x22);
+    epd_data(0xC4);
+    epd_cmd(0x20);
+    delay_ms(100);
+    saw_busy = epd_wait_update_done();
+
+    epd_cmd(0x22);
+    epd_data(0x03);
+    epd_cmd(0x20);
+    delay_ms(20);
+    return saw_busy;
+}
+
+static void epd_write_new_ram_start(void)
+{
+    epd_set_ram_area();
+    epd_set_ram_cursor();
+    delay_ms(5);
+    epd_cmd(0x24);
+    delay_ms(5);
+}
+
+static void epd_write_new_ram_fill_only(uint8_t value)
+{
+    uint16_t col;
+    uint16_t row;
+
+    epd_write_new_ram_start();
+    for (col = 0; col < EPD_RAM_H; col++) {
+        for (row = 0; row < EPD_RAM_W_BYTES; row++) {
+            epd_data(value);
+        }
+    }
+}
+
+static void epd_write_new_ram_buffer_only(const uint8_t *buf)
+{
+    uint16_t i;
+
+    epd_write_new_ram_start();
+    for (i = 0; i < EPD_BUF_SIZE; i++) {
+        epd_data(buf[i]);
+    }
+}
+
+static void epd_alt_write_ram_fill_only(uint8_t value)
+{
+    uint16_t i;
+
+    epd_alt_set_ram_area();
+    epd_cmd(0x24);
+    for (i = 0; i < EPD_ALT_BUF_SIZE; i++) {
+        epd_data(value);
+    }
+}
+
+static void epd_alt_write_ram_buffer_only(const uint8_t *buf)
+{
+    uint16_t i;
+
+    epd_alt_set_ram_area();
+    epd_cmd(0x24);
+    for (i = 0; i < EPD_ALT_BUF_SIZE; i++) {
+        epd_data(buf[i]);
+    }
+}
+
+static uint8_t epd_fill_screen(uint8_t value)
+{
+    epd_cmd(0x21);
+    epd_data(0x03);
+    epd_cmd(0x3C);
+    epd_data(0x73);
+    epd_write_new_ram_fill_only(value);
+    return epd_update();
+}
+
+static uint8_t epd_alt_fill_screen(uint8_t value)
+{
+    epd_alt_write_ram_fill_only(value);
+    return epd_alt_update();
+}
+
+static uint8_t epd_write_buffer_to_screen(const uint8_t *buf)
+{
+    epd_cmd(0x21);
+    epd_data(0x03);
+    epd_cmd(0x3C);
+    epd_data(0x73);
+    epd_write_new_ram_buffer_only(buf);
+    return epd_update();
+}
+
+static uint8_t epd_alt_write_buffer_to_screen(const uint8_t *buf)
+{
+    epd_alt_write_ram_buffer_only(buf);
+    return epd_alt_update();
+}
+
+static void epd_init(void)
+{
+    EPD_BUSY_REN &= ~EPD_BUSY_BIT;
+
+    epd_recover_from_unknown_state();
+
+    epd_cmd(0x01);
+    epd_data(0xF9);
+    epd_data(0x00);
+    epd_cmd(0x3A);
+    epd_data(0x06);
+    epd_cmd(0x3B);
+    epd_data(0x0B);
+    epd_cmd(0x3C);
+    epd_data(0x33);
+    epd_set_ram_area();
+
+    epd_cmd(0x2C);
+    epd_data(0x4B);
+    epd_write_lut();
+
+    epd_cmd(0x21);
+    epd_data(0x83);
+    epd_write_new_ram_fill_only(0xFF);
+    epd_update();
+    epd_cmd(0x21);
+    epd_data(0x03);
+    epd_cmd(0x3C);
+    epd_data(0x73);
+}
+
+static void epd_alt_init(void)
+{
+    EPD_BUSY_REN &= ~EPD_BUSY_BIT;
+
+    epd_recover_from_unknown_state();
+
+    epd_cmd(0x10);
+    epd_data(0x00);
+    epd_cmd(0x11);
+    epd_data(0x03);
+    epd_cmd(0x44);
+    epd_data(0x00);
+    epd_data(0x11);
+    epd_cmd(0x45);
+    epd_data(0x00);
+    epd_data(0xAB);
+    epd_cmd(0x4E);
+    epd_data(0x00);
+    epd_cmd(0x4F);
+    epd_data(0xAB);
+    epd_cmd(0x21);
+    epd_data(0x03);
+    epd_cmd(0xF0);
+    epd_data(0x1F);
+    epd_cmd(0x2C);
+    epd_data(0xA0);
+    epd_cmd(0x3C);
+    epd_data(0x63);
+    epd_cmd(0x22);
+    epd_data(0xC4);
+    epd_alt_write_lut();
+}
+
+static void epd_clear_buffer(void)
+{
+    uint16_t i;
+
+    for (i = 0; i < EPD_BUF_SIZE; i++) {
+        epd_buf[i] = 0xFF;
+    }
+}
+
+static void epd_pixel(uint16_t x, uint16_t y, uint8_t black)
+{
+    uint16_t ram_x;
+    uint16_t ram_y;
+    uint16_t index;
+    uint8_t mask;
+
+    if (x >= EPD_SCREEN_W || y >= EPD_SCREEN_H) {
+        return;
+    }
+
+    ram_x = y;
+    ram_y = x;
+    index = (uint16_t)(ram_y * EPD_RAM_W_BYTES + (ram_x >> 3));
+    mask = (uint8_t)(0x80u >> (ram_x & 7u));
+
+    if (black) {
+        epd_buf[index] &= (uint8_t)(~mask);
+    } else {
+        epd_buf[index] |= mask;
+    }
+}
+
+static void epd_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
+{
+    uint8_t col;
+    uint8_t row;
+    uint8_t sx;
+    uint8_t sy;
+    uint8_t bits;
+    uint8_t glyph_index;
+
+    if ((uint8_t)c < 32u || (uint8_t)c > 127u) {
+        c = '?';
+    }
+    glyph_index = (uint8_t)c - 32u;
+
+    for (col = 0; col < 5u; col++) {
+        bits = font5x7[glyph_index][col];
+        for (row = 0; row < 7u; row++) {
+            if (bits & (1u << row)) {
+                for (sx = 0; sx < scale; sx++) {
+                    for (sy = 0; sy < scale; sy++) {
+                        epd_pixel((uint16_t)(x + col * scale + sx),
+                                  (uint16_t)(y + row * scale + sy), 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void epd_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale)
+{
+    uint16_t cursor;
+    uint16_t step;
+
+    cursor = x;
+    step = (uint16_t)(6u * scale);
+    while (*s && cursor < EPD_SCREEN_W) {
+        epd_draw_char(cursor, y, *s++, scale);
+        cursor = (uint16_t)(cursor + step);
+    }
+}
+
+static void epd_flush(void)
+{
+    (void)epd_write_buffer_to_screen(epd_buf);
+}
+
+static void epd_test_pattern(void)
+{
+    uint8_t busy_seen;
+
+    uart_puts("EPD test BUSY=");
+    uart_putc((EPD_BUSY_IN & EPD_BUSY_BIT) ? '1' : '0');
+    uart_puts("\r\n");
+
+    g_epd_auto_update = 0;
+    epd_init();
+    busy_seen = epd_fill_screen(0x00);
+    uart_puts("EPD official black busy_seen=");
+    uart_putc(busy_seen ? '1' : '0');
+    uart_puts("\r\n");
+
+    uart_puts("EPD auto display paused; send o=white, t=text, r=resume\r\n");
+}
+
+static void epd_test_white(void)
+{
+    uint8_t busy_seen;
+
+    g_epd_auto_update = 0;
+    busy_seen = epd_fill_screen(0xFF);
+    uart_puts("EPD official white busy_seen=");
+    uart_putc(busy_seen ? '1' : '0');
+    uart_puts("\r\n");
+}
+
+static void epd_test_text(void)
+{
+    uint8_t busy_seen;
+
+    epd_clear_buffer();
+    epd_draw_string(38, 22, "EPD TEST", 3);
+    epd_draw_string(32, 72, "POCKET KIT", 2);
+    g_epd_auto_update = 0;
+    busy_seen = epd_write_buffer_to_screen(epd_buf);
+
+    uart_puts("EPD official text busy_seen=");
+    uart_putc(busy_seen ? '1' : '0');
+    uart_puts(" BUSY=");
+    uart_putc((EPD_BUSY_IN & EPD_BUSY_BIT) ? '1' : '0');
+    uart_puts("\r\n");
+}
+
+static void epd_print_pins(void)
+{
+    uart_puts("EPD pins BUSY=");
+    uart_putc((EPD_BUSY_IN & EPD_BUSY_BIT) ? '1' : '0');
+    uart_puts(" P1 DIR=");
+    uart_print_hex_u8(P1DIR);
+    uart_puts(" OUT=");
+    uart_print_hex_u8(P1OUT);
+    uart_puts(" SEL=");
+    uart_print_hex_u8(P1SEL);
+    uart_puts(" P2 DIR=");
+    uart_print_hex_u8(P2DIR);
+    uart_puts(" OUT=");
+    uart_print_hex_u8(P2OUT);
+    uart_puts(" SEL=");
+    uart_print_hex_u8(P2SEL);
+    uart_puts(" P3 DIR=");
+    uart_print_hex_u8(P3DIR);
+    uart_puts(" OUT=");
+    uart_print_hex_u8(P3OUT);
+    uart_puts(" SEL=");
+    uart_print_hex_u8(P3SEL);
+    uart_puts("\r\n");
+}
+
+static void epd_pin_hold(const char *name, volatile uint8_t *out, uint8_t bit)
+{
+    uart_puts("EPD pin ");
+    uart_puts(name);
+    uart_puts(" LOW\r\n");
+    *out &= (uint8_t)(~bit);
+    delay_ms(1500);
+
+    uart_puts("EPD pin ");
+    uart_puts(name);
+    uart_puts(" HIGH\r\n");
+    *out |= bit;
+    delay_ms(1500);
+}
+
+static void epd_pin_drive_test(void)
+{
+    g_epd_auto_update = 0;
+    spi0_init();
+
+    uart_puts("EPD pin drive test: measure each named pin to GND\r\n");
+    epd_pin_hold("RST P1.4", &P1OUT, BIT4);
+    epd_pin_hold("CS  P3.2", &P3OUT, BIT2);
+    epd_pin_hold("SDI P3.3", &P3OUT, BIT3);
+    epd_pin_hold("DC  P3.4", &P3OUT, BIT4);
+    epd_pin_hold("CLK P2.7", &P2OUT, BIT7);
+
+    EPD_RST_OUT |= EPD_RST_BIT;
+    EPD_CS_OUT |= EPD_CS_BIT;
+    EPD_DC_OUT |= EPD_DC_BIT;
+    EPD_SDI_OUT &= ~EPD_SDI_BIT;
+    EPD_CLK_OUT &= ~EPD_CLK_BIT;
+    epd_print_pins();
+    uart_puts("EPD pin drive test done; auto display paused\r\n");
+}
+
+static void epd_bypass_step(uint8_t ctrl21, const char *label)
+{
+    uint8_t busy_seen;
+
+    uart_puts("EPD bypass ");
+    uart_puts(label);
+    uart_puts(" 0x21=");
+    uart_print_hex_u8(ctrl21);
+    uart_puts(" 0x22=0xF7\r\n");
+
+    epd_cmd(0x21);
+    epd_data(ctrl21);
+    busy_seen = epd_update_with_ctrl(0xF7);
+
+    uart_puts("EPD bypass busy_seen=");
+    uart_putc(busy_seen ? '1' : '0');
+    uart_puts(" BUSY=");
+    uart_putc((EPD_BUSY_IN & EPD_BUSY_BIT) ? '1' : '0');
+    uart_puts("\r\n");
+    delay_ms(2500);
+}
+
+static void epd_test_bypass_cycle(void)
+{
+    g_epd_auto_update = 0;
+    g_epd_driver = EPD_DRIVER_SSD1673;
+
+    uart_puts("EPD bypass cycle start\r\n");
+    epd_print_pins();
+    epd_init();
+    epd_print_pins();
+
+    epd_bypass_step(0xC3, "old=0 new=0");
+    epd_bypass_step(0xD3, "old=0 new=1");
+    epd_bypass_step(0xE3, "old=1 new=0");
+    epd_bypass_step(0xF3, "old=1 new=1");
+
+    epd_cmd(0x21);
+    epd_data(0x03);
+    epd_cmd(0x3C);
+    epd_data(0x73);
+    uart_puts("EPD bypass cycle done; auto display paused\r\n");
+}
+
+static void epd_alt_clear_buffer(void)
+{
+    uint16_t i;
+
+    for (i = 0; i < EPD_ALT_BUF_SIZE; i++) {
+        epd_buf[i] = 0xFF;
+    }
+}
+
+static void epd_alt_pixel(uint16_t x, uint16_t y, uint8_t black)
+{
+    uint16_t index;
+    uint8_t mask;
+
+    if (x >= EPD_ALT_SCREEN_W || y >= EPD_ALT_SCREEN_H) {
+        return;
+    }
+
+    index = (uint16_t)(x * EPD_ALT_RAM_W_BYTES + (y >> 3));
+    mask = (uint8_t)(0x80u >> (y & 7u));
+
+    if (black) {
+        epd_buf[index] &= (uint8_t)(~mask);
+    } else {
+        epd_buf[index] |= mask;
+    }
+}
+
+static void epd_alt_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
+{
+    uint8_t col;
+    uint8_t row;
+    uint8_t sx;
+    uint8_t sy;
+    uint8_t bits;
+    uint8_t glyph_index;
+
+    if ((uint8_t)c < 32u || (uint8_t)c > 127u) {
+        c = '?';
+    }
+    glyph_index = (uint8_t)c - 32u;
+
+    for (col = 0; col < 5u; col++) {
+        bits = font5x7[glyph_index][col];
+        for (row = 0; row < 7u; row++) {
+            if (bits & (1u << row)) {
+                for (sx = 0; sx < scale; sx++) {
+                    for (sy = 0; sy < scale; sy++) {
+                        epd_alt_pixel((uint16_t)(x + col * scale + sx),
+                                      (uint16_t)(y + row * scale + sy), 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void epd_alt_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale)
+{
+    uint16_t cursor;
+    uint16_t step;
+
+    cursor = x;
+    step = (uint16_t)(6u * scale);
+    while (*s && cursor < EPD_ALT_SCREEN_W) {
+        epd_alt_draw_char(cursor, y, *s++, scale);
+        cursor = (uint16_t)(cursor + step);
+    }
+}
+
+static void epd_alt_test_black(void)
+{
+    uint8_t busy_seen;
+
+    uart_puts("EPD alt init BUSY=");
+    uart_putc((EPD_BUSY_IN & EPD_BUSY_BIT) ? '1' : '0');
+    uart_puts("\r\n");
+
+    g_epd_auto_update = 0;
+    epd_alt_init();
+    busy_seen = epd_alt_fill_screen(0x00);
+    uart_puts("EPD alt black busy_seen=");
+    uart_putc(busy_seen ? '1' : '0');
+    uart_puts("\r\n");
+    uart_puts("EPD auto display paused; send f=alt white, g=alt text, m=use alt\r\n");
+}
+
+static void epd_alt_test_white(void)
+{
+    uint8_t busy_seen;
+
+    g_epd_auto_update = 0;
+    busy_seen = epd_alt_fill_screen(0xFF);
+    uart_puts("EPD alt white busy_seen=");
+    uart_putc(busy_seen ? '1' : '0');
+    uart_puts("\r\n");
+}
+
+static void epd_alt_test_text(void)
+{
+    uint8_t busy_seen;
+
+    epd_alt_clear_buffer();
+    epd_alt_draw_string(12, 24, "ALT EPD", 3);
+    epd_alt_draw_string(10, 76, "SPD2701", 2);
+    g_epd_auto_update = 0;
+    busy_seen = epd_alt_write_buffer_to_screen(epd_buf);
+
+    uart_puts("EPD alt text busy_seen=");
+    uart_putc(busy_seen ? '1' : '0');
+    uart_puts(" BUSY=");
+    uart_putc((EPD_BUSY_IN & EPD_BUSY_BIT) ? '1' : '0');
+    uart_puts("\r\n");
+}
+
+static void sample_to_lines(const TempSample *s, char line[5][24])
+{
+    char *p;
+
+    p = line[0];
+    p = append_str(p, "DIE ");
+    p = append_t10(p, s->die_t10);
+    (void)append_str(p, " C");
+
+    p = line[1];
+    p = append_str(p, "NTC ");
+    p = append_t10(p, s->ntc_t10);
+    (void)append_str(p, " C");
+
+    p = line[2];
+    p = append_str(p, "TMP ");
+    p = append_t10(p, s->tmp_local_t10);
+    (void)append_str(p, " C");
+
+    p = line[3];
+    p = append_str(p, "REM ");
+    p = append_t10(p, s->tmp_remote_t10);
+    (void)append_str(p, " C");
+
+    p = line[4];
+    p = append_str(p, "ALM ");
+    p = append_t10(p, g_threshold_t10);
+    (void)append_str(p, " C");
+}
+
+static void epd_alt_show_current(const TempSample *s)
+{
+    char lines[5][24];
+    uint8_t i;
+
+    sample_to_lines(s, lines);
+    epd_alt_clear_buffer();
+    epd_alt_draw_string(0, 0, "TEMP LOGGER", 2);
+    for (i = 0; i < 5u; i++) {
+        epd_alt_draw_string(0, (uint16_t)(22u + i * 18u), lines[i], 2);
+    }
+    if (sample_over_threshold(s)) {
+        epd_alt_draw_string(92, 124, "ALARM", 2);
+    } else {
+        epd_alt_draw_string(128, 124, "OK", 2);
+    }
+    (void)epd_alt_write_buffer_to_screen(epd_buf);
+}
+
+static void epd_show_current(const TempSample *s)
+{
+    char lines[5][24];
+    uint8_t i;
+
+    sample_to_lines(s, lines);
+    epd_clear_buffer();
+    epd_draw_string(0, 0, "TEMP LOGGER", 2);
+    for (i = 0; i < 5u; i++) {
+        epd_draw_string(0, (uint16_t)(22u + i * 18u), lines[i], 2);
+    }
+    if (sample_over_threshold(s)) {
+        epd_draw_string(154, 104, "ALARM", 2);
+    } else {
+        epd_draw_string(154, 104, "OK", 2);
+    }
+    epd_flush();
+}
+
+static uint8_t t10_fast_changed(int16_t now_t10, int16_t old_t10)
+{
+    int16_t diff;
+
+    if (now_t10 == INVALID_T10 || old_t10 == INVALID_T10) {
+        return 0;
+    }
+
+    diff = (int16_t)(now_t10 - old_t10);
+    if (diff < 0) {
+        diff = (int16_t)(-diff);
+    }
+    return (uint8_t)(diff >= EPD_FAST_REFRESH_DELTA_T10);
+}
+
+static uint8_t epd_current_refresh_due(const TempSample *s)
+{
+    uint8_t alarm_now;
+    uint8_t alarm_last;
+
+    if (!g_epd_has_last_sample) {
+        return 1;
+    }
+
+    if (g_epd_samples_since_refresh >= EPD_AUTO_REFRESH_SAMPLES) {
+        return 1;
+    }
+
+    alarm_now = sample_over_threshold(s);
+    alarm_last = sample_over_threshold(&g_epd_last_sample);
+    if (alarm_now && !alarm_last) {
+        return 1;
+    }
+
+    if (t10_fast_changed(s->die_t10, g_epd_last_sample.die_t10)) {
+        return 1;
+    }
+    if (t10_fast_changed(s->ntc_t10, g_epd_last_sample.ntc_t10)) {
+        return 1;
+    }
+    if (t10_fast_changed(s->tmp_local_t10, g_epd_last_sample.tmp_local_t10)) {
+        return 1;
+    }
+    if (t10_fast_changed(s->tmp_remote_t10, g_epd_last_sample.tmp_remote_t10)) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static void epd_note_current_refreshed(const TempSample *s)
+{
+    g_epd_last_sample = *s;
+    g_epd_has_last_sample = 1;
+    g_epd_samples_since_refresh = 0;
+}
+
+static void epd_force_next_current_refresh(void)
+{
+    g_epd_samples_since_refresh = EPD_AUTO_REFRESH_SAMPLES;
+}
+
+static void epd_show_current_auto(const TempSample *s)
+{
+    if (g_epd_samples_since_refresh < EPD_AUTO_REFRESH_SAMPLES) {
+        g_epd_samples_since_refresh++;
+    }
+
+    if (!epd_current_refresh_due(s)) {
+        return;
+    }
+
+    if (g_epd_driver == EPD_DRIVER_SPD2701) {
+        epd_alt_show_current(s);
+    } else {
+        epd_show_current(s);
+    }
+    epd_note_current_refreshed(s);
+}
+
+static void record_to_line(const TempRecord *r, char *line)
+{
+    char *p;
+
+    p = line;
+    *p++ = '#';
+    p = append_u16(p, r->seq);
+    p = append_str(p, " I");
+    p = append_t10(p, r->die_t10);
+    p = append_str(p, " N");
+    p = append_t10(p, r->ntc_t10);
+    p = append_str(p, " T");
+    (void)append_t10(p, r->tmp_local_t10);
+}
+
+static void epd_alt_show_history(uint16_t start)
+{
+    uint16_t count;
+    uint8_t row;
+    TempRecord r;
+    char line[40];
+    char *p;
+
+    count = history_count();
+    if (start >= count && count > 0) {
+        start = 0;
+    }
+
+    epd_alt_clear_buffer();
+    p = line;
+    p = append_str(p, "HISTORY ");
+    p = append_u16(p, count);
+    (void)append_str(p, " REC");
+    epd_alt_draw_string(0, 0, line, 2);
+
+    if (count == 0) {
+        epd_alt_draw_string(0, 44, "NO RECORD", 2);
+        (void)epd_alt_write_buffer_to_screen(epd_buf);
+        g_history_page = 0;
+        return;
+    }
+
+    for (row = 0; row < HISTORY_ROWS_ON_EPD; row++) {
+        if (history_get((uint16_t)(start + row), &r)) {
+            record_to_line(&r, line);
+            epd_alt_draw_string(0, (uint16_t)(24u + row * 18u), line, 1);
+        }
+    }
+
+    (void)epd_alt_write_buffer_to_screen(epd_buf);
+}
+
+static void epd_show_history(uint16_t start)
+{
+    uint16_t count;
+    uint8_t row;
+    TempRecord r;
+    char line[40];
+    char *p;
+
+    count = history_count();
+    if (start >= count && count > 0) {
+        start = 0;
+    }
+
+    epd_clear_buffer();
+    p = line;
+    p = append_str(p, "HISTORY ");
+    p = append_u16(p, count);
+    (void)append_str(p, " REC");
+    epd_draw_string(0, 0, line, 2);
+
+    if (count == 0) {
+        epd_draw_string(0, 44, "NO RECORD", 2);
+        epd_flush();
+        g_history_page = 0;
+        return;
+    }
+
+    for (row = 0; row < HISTORY_ROWS_ON_EPD; row++) {
+        if (history_get((uint16_t)(start + row), &r)) {
+            record_to_line(&r, line);
+            epd_draw_string(0, (uint16_t)(24u + row * 18u), line, 1);
+        }
+    }
+
+    g_history_page = start;
+    epd_flush();
+}
+
+static void buzzer_set(uint8_t on)
+{
+    if (on && !g_buzzer_on) {
+        BUZZER_OUT &= ~BUZZER_BIT;
+        TA2CCR0 = (uint16_t)(BUZZER_HALF_PERIOD_TICKS - 1u);
+        TA2CCTL0 = CCIE;
+        TA2CTL = TASSEL_2 | MC_1 | TACLR;
+        g_buzzer_on = 1;
+    } else if (!on && g_buzzer_on) {
+        TA2CTL = MC_0 | TACLR;
+        TA2CCTL0 = 0;
+        BUZZER_OUT &= ~BUZZER_BIT;
+        g_buzzer_on = 0;
+    }
+}
+
+static void sample_timer_init(void)
+{
+    TA0CCR0 = 32768u - 1u;
+    TA0CCTL0 = CCIE;
+    TA0CTL = TASSEL_1 | MC_1 | TACLR;
+}
+
+static void collect_sample(TempSample *s)
+{
+    uint16_t adc;
+    uint8_t tmp_ok;
+    uint8_t status;
+
+    s->flags = 0;
+
+    adc = adc_read_avg(ADC12INCH_10, ADC12SREF_1, 1);
+    s->die_t10 = die_adc_to_t10(adc);
+    s->flags |= FLAG_DIE_OK;
+
+    adc = adc_read_avg(NTC_ADC_INCH, ADC12SREF_0, 0);
+    g_last_ntc_adc = adc;
+    if (adc > 4u && adc < 4091u) {
+        s->ntc_t10 = ntc_adc_to_t10(adc);
+        s->flags |= FLAG_NTC_OK;
+    } else {
+        s->ntc_t10 = INVALID_T10;
+    }
+
+    tmp_ok = tmp421_read_t10(TMP421_REG_LOCAL_MSB, TMP421_REG_LOCAL_LSB, &s->tmp_local_t10);
+    if (tmp_ok) {
+        s->flags |= FLAG_TMP_LOCAL_OK;
+    }
+
+    tmp_ok = tmp421_read_t10(TMP421_REG_REMOTE_MSB, TMP421_REG_REMOTE_LSB, &s->tmp_remote_t10);
+    if (tmp_ok) {
+        if (g_tmp421_addr && i2c_read_reg(g_tmp421_addr, TMP421_REG_STATUS, &status)) {
+            if (status & BIT2) {
+                s->tmp_remote_t10 = INVALID_T10;
+            } else {
+                s->flags |= FLAG_TMP_REMOTE_OK;
+            }
+        } else {
+            s->flags |= FLAG_TMP_REMOTE_OK;
+        }
+    }
+}
+
+static void process_command(uint8_t cmd)
+{
+    uint16_t count;
+
+    if (cmd >= 'A' && cmd <= 'Z') {
+        cmd = (uint8_t)(cmd + ('a' - 'A'));
+    }
+
+    switch (cmd) {
+    case 'h':
+        print_history_uart();
+        if (g_epd_driver == EPD_DRIVER_SPD2701) {
+            epd_alt_show_history(0);
+        } else {
+            epd_show_history(0);
+        }
+        break;
+    case 'n':
+        count = history_count();
+        if (count == 0) {
+            if (g_epd_driver == EPD_DRIVER_SPD2701) {
+                epd_alt_show_history(0);
+            } else {
+                epd_show_history(0);
+            }
+            break;
+        }
+        g_history_page = (uint16_t)(g_history_page + HISTORY_ROWS_ON_EPD);
+        if (g_history_page >= count) {
+            g_history_page = 0;
+        }
+        if (g_epd_driver == EPD_DRIVER_SPD2701) {
+            epd_alt_show_history(g_history_page);
+        } else {
+            epd_show_history(g_history_page);
+        }
+        break;
+    case 'c':
+        epd_force_next_current_refresh();
+        g_sample_due = 1;
+        break;
+    case '+':
+        g_threshold_t10 = (int16_t)(g_threshold_t10 + 10);
+        epd_force_next_current_refresh();
+        g_sample_due = 1;
+        uart_puts("Threshold=");
+        uart_print_i16_t10(g_threshold_t10);
+        uart_puts("C\r\n");
+        break;
+    case '-':
+        g_threshold_t10 = (int16_t)(g_threshold_t10 - 10);
+        epd_force_next_current_refresh();
+        g_sample_due = 1;
+        uart_puts("Threshold=");
+        uart_print_i16_t10(g_threshold_t10);
+        uart_puts("C\r\n");
+        break;
+    case 'e':
+        flash_erase_log();
+        uart_puts("History erased\r\n");
+        if (g_epd_driver == EPD_DRIVER_SPD2701) {
+            epd_alt_show_history(0);
+        } else {
+            epd_show_history(0);
+        }
+        break;
+    case 'i':
+        (void)tmp421_detect();
+        i2c_print_scan();
+        break;
+    case 's':
+        epd_print_pins();
+        break;
+    case 'x':
+        epd_pin_drive_test();
+        break;
+    case 'p':
+        g_epd_driver = EPD_DRIVER_SSD1673;
+        epd_test_pattern();
+        break;
+    case 'o':
+        epd_test_white();
+        break;
+    case 't':
+        epd_test_text();
+        break;
+    case 'u':
+        epd_test_bypass_cycle();
+        break;
+    case 'd':
+        g_epd_driver = EPD_DRIVER_SPD2701;
+        epd_alt_test_black();
+        break;
+    case 'f':
+        epd_alt_test_white();
+        break;
+    case 'g':
+        epd_alt_test_text();
+        break;
+    case 'm':
+        g_epd_driver = EPD_DRIVER_SPD2701;
+        g_epd_auto_update = 1;
+        epd_alt_init();
+        epd_force_next_current_refresh();
+        g_sample_due = 1;
+        uart_puts("EPD alternate driver selected\r\n");
+        break;
+    case 'r':
+        g_epd_auto_update = 1;
+        epd_force_next_current_refresh();
+        g_sample_due = 1;
+        uart_puts("EPD auto display resumed\r\n");
+        break;
+    case '?':
+    default:
+        uart_print_help();
+        break;
+    }
+}
+
+int main(void)
+{
+    TempSample sample;
+    uint8_t cmd;
+
+    WDTCTL = WDTPW | WDTHOLD;
+
+    clock_init();
+    gpio_init();
+    uart_init();
+    i2c_init();
+    tmp421_init();
+    flash_scan();
+    epd_init();
+    sample_timer_init();
+
+    uart_puts("\r\nMSP430F5529 temperature logger\r\n");
+    if (g_tmp421_addr) {
+        uart_puts("TMP421 addr=");
+        uart_print_hex_u8(g_tmp421_addr);
+        uart_puts("\r\n");
+    } else {
+        uart_puts("TMP421 not detected; send 'i' for I2C scan\r\n");
+    }
+    uart_print_help();
+    __enable_interrupt();
+
+    while (1) {
+        if (g_sample_due) {
+            g_sample_due = 0;
+            collect_sample(&sample);
+            P1OUT ^= BIT0;
+            uart_print_sample(&sample);
+            flash_log_sample(&sample);
+            buzzer_set(sample_over_threshold(&sample));
+            if (g_epd_auto_update) {
+                epd_show_current_auto(&sample);
+            }
+        }
+
+        cmd = g_uart_cmd;
+        if (cmd != 0) {
+            g_uart_cmd = 0;
+            process_command(cmd);
+        }
+
+        __bis_SR_register(LPM0_bits | GIE);
+        __no_operation();
+    }
+}
+
+#pragma vector=TIMER0_A0_VECTOR
+__interrupt void TIMER0_A0_ISR(void)
+{
+    g_second_count++;
+    if (g_second_count >= g_sample_interval) {
+        g_second_count = 0;
+        g_sample_due = 1;
+        __bic_SR_register_on_exit(LPM0_bits);
+    }
+}
+
+#pragma vector=TIMER2_A0_VECTOR
+__interrupt void TIMER2_A0_ISR(void)
+{
+    BUZZER_OUT ^= BUZZER_BIT;
+}
+
+#pragma vector=USCI_A1_VECTOR
+__interrupt void USCI_A1_ISR(void)
+{
+    uint8_t c;
+
+    switch (__even_in_range(UCA1IV, 4)) {
+    case 2:
+        c = UCA1RXBUF;
+        if (c != '\r' && c != '\n' && c != ' ' && c != '\t') {
+            g_uart_cmd = c;
+            __bic_SR_register_on_exit(LPM0_bits);
+        }
+        break;
+    default:
+        break;
+    }
+}
