@@ -69,6 +69,7 @@
 #define BUTTON_S3_BIT               BIT3
 #define BUTTON_S4_BIT               BIT6
 #define BUTTON_DEBOUNCE_MS          12u
+#define BUTTON_REPEAT_GUARD_TICKS   8u        /* 按键触发后 80ms 内忽略重复边沿，过滤释放抖动。 */
 #define BUTTON_BEEP_MS              180u
 #define SETTINGS_SAVE_DELAY_TICKS   80u       /* 设置修改后空闲约 0.8 秒再写 Flash。 */
 

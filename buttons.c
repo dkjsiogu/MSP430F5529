@@ -26,6 +26,11 @@ static volatile uint8_t g_button1_irq_bits = 0;
 static volatile uint8_t g_button2_irq_bits = 0;
 static uint8_t g_button1_last_pressed = 0;
 static uint8_t g_button2_last_pressed = 0;
+static uint8_t g_button_guard_seen = 0;
+static uint16_t g_button_s1_last_tick = 0;
+static uint16_t g_button_s2_last_tick = 0;
+static uint16_t g_button_s3_last_tick = 0;
+static uint16_t g_button_s4_last_tick = 0;
 static uint8_t g_button_mode = BUTTON_MODE_MAIN;
 static uint8_t g_settings_item = SETTINGS_ITEM_SAMPLE;
 
@@ -50,6 +55,37 @@ void buttons_init(void)
     BUTTON2_PORT_IE |= BUTTON2_BITS;
 }
 
+static uint8_t button_event_allowed(uint8_t event)
+{
+    uint16_t now;
+    uint16_t *last_tick;
+
+    now = board_tick10();
+    switch (event) {
+    case BUTTON_EVENT_S1:
+        last_tick = &g_button_s1_last_tick;
+        break;
+    case BUTTON_EVENT_S2:
+        last_tick = &g_button_s2_last_tick;
+        break;
+    case BUTTON_EVENT_S3:
+        last_tick = &g_button_s3_last_tick;
+        break;
+    default:
+        last_tick = &g_button_s4_last_tick;
+        break;
+    }
+
+    if ((g_button_guard_seen & event) &&
+        !board_tick10_elapsed(*last_tick, BUTTON_REPEAT_GUARD_TICKS)) {
+        return 0;
+    }
+
+    g_button_guard_seen |= event;
+    *last_tick = now;
+    return 1;
+}
+
 static uint8_t buttons_take_events(void)
 {
     uint8_t irq1_bits;
@@ -64,11 +100,9 @@ static uint8_t buttons_take_events(void)
     pressed2 = (uint8_t)((~BUTTON2_PORT_IN) & BUTTON2_BITS);
     irq1_bits = g_button1_irq_bits;
     irq2_bits = g_button2_irq_bits;
-    new1_pressed = (uint8_t)(pressed1 & (uint8_t)~g_button1_last_pressed);
-    new2_pressed = (uint8_t)(pressed2 & (uint8_t)~g_button2_last_pressed);
-    if (irq1_bits == 0 && irq2_bits == 0 && new1_pressed == 0 && new2_pressed == 0) {
-        g_button1_last_pressed = pressed1;
-        g_button2_last_pressed = pressed2;
+    if (irq1_bits == 0 && irq2_bits == 0 &&
+        pressed1 == g_button1_last_pressed &&
+        pressed2 == g_button2_last_pressed) {
         return 0;
     }
 
@@ -79,16 +113,16 @@ static uint8_t buttons_take_events(void)
     new1_pressed = (uint8_t)(pressed1 & (uint8_t)~g_button1_last_pressed);
     new2_pressed = (uint8_t)(pressed2 & (uint8_t)~g_button2_last_pressed);
     events = 0;
-    if ((irq1_bits & BUTTON_S1_BIT) || (new1_pressed & BUTTON_S1_BIT)) {
+    if ((new1_pressed & BUTTON_S1_BIT) && button_event_allowed(BUTTON_EVENT_S1)) {
         events |= BUTTON_EVENT_S1;
     }
-    if ((irq1_bits & BUTTON_S2_BIT) || (new1_pressed & BUTTON_S2_BIT)) {
+    if ((new1_pressed & BUTTON_S2_BIT) && button_event_allowed(BUTTON_EVENT_S2)) {
         events |= BUTTON_EVENT_S2;
     }
-    if ((irq2_bits & BUTTON_S3_BIT) || (new2_pressed & BUTTON_S3_BIT)) {
+    if ((new2_pressed & BUTTON_S3_BIT) && button_event_allowed(BUTTON_EVENT_S3)) {
         events |= BUTTON_EVENT_S3;
     }
-    if ((irq2_bits & BUTTON_S4_BIT) || (new2_pressed & BUTTON_S4_BIT)) {
+    if ((new2_pressed & BUTTON_S4_BIT) && button_event_allowed(BUTTON_EVENT_S4)) {
         events |= BUTTON_EVENT_S4;
     }
 
