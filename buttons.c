@@ -18,7 +18,8 @@
 #define SETTINGS_ITEM_ALARM_TEMP    1u   /* 设置项：报警温度阈值。 */
 #define SETTINGS_ITEM_STORAGE       2u   /* 设置项：Flash 历史记录保存条数。 */
 #define SETTINGS_ITEM_ALARM_TIME    3u   /* 设置项：蜂鸣器报警持续时间。 */
-#define SETTINGS_ITEM_COUNT         4u   /* 设置项总数，用于选择项循环。 */
+#define SETTINGS_ITEM_HOURGLASS     4u   /* 设置项：沙漏动画周期和 TMP 平均温度窗口。 */
+#define SETTINGS_ITEM_COUNT         5u   /* 设置项总数，用于选择项循环。 */
 
 #define BUTTON1_BITS                (BUTTON_S1_BIT | BUTTON_S2_BIT) /* P1 端口上 S1/S2 的位掩码。 */
 #define BUTTON2_BITS                (BUTTON_S3_BIT | BUTTON_S4_BIT) /* P2 端口上 S3/S4 的位掩码。 */
@@ -230,6 +231,9 @@ static void buttons_adjust_setting(const TempSample *last_sample, uint8_t has_sa
         break;
     case SETTINGS_ITEM_ALARM_TIME:
         (void)app_adjust_alarm_duration((int8_t)(direction * ALARM_DURATION_STEP_SECONDS));
+        break;
+    case SETTINGS_ITEM_HOURGLASS:
+        (void)app_adjust_hourglass_seconds((int8_t)(direction * HOURGLASS_STEP_SECONDS));
         break;
     default:
         break;

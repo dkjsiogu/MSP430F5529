@@ -7,6 +7,8 @@ typedef struct {
     uint16_t seq;
     uint8_t sample_interval;
     uint8_t alarm_duration;
+    uint8_t hourglass_seconds;
+    uint8_t reserved;
     int16_t threshold_t10;
     uint16_t storage_limit;
     uint16_t crc;
@@ -16,6 +18,7 @@ typedef struct {
 
 static uint8_t g_sample_interval = SAMPLE_INTERVAL_SECONDS;
 static uint8_t g_alarm_duration = ALARM_DURATION_SECONDS;
+static uint8_t g_hourglass_seconds = HOURGLASS_SECONDS;
 static int16_t g_threshold_t10 = ALERT_THRESHOLD_T10;
 static uint16_t g_storage_limit = STORAGE_LIMIT_DEFAULT;
 static uint16_t g_settings_next_index = 0;
@@ -49,6 +52,10 @@ static uint16_t settings_crc(const SettingsRecord *r)
     crc = (uint16_t)((crc << 1) | (crc >> 15));
     crc ^= r->alarm_duration;
     crc = (uint16_t)((crc << 1) | (crc >> 15));
+    crc ^= r->hourglass_seconds;
+    crc = (uint16_t)((crc << 1) | (crc >> 15));
+    crc ^= r->reserved;
+    crc = (uint16_t)((crc << 1) | (crc >> 15));
     crc ^= (uint16_t)r->threshold_t10;
     crc = (uint16_t)((crc << 1) | (crc >> 15));
     crc ^= r->storage_limit;
@@ -68,6 +75,9 @@ static uint8_t settings_record_valid(const SettingsRecord *r)
         return 0;
     }
     if (r->alarm_duration < ALARM_DURATION_MIN_SECONDS || r->alarm_duration > ALARM_DURATION_MAX_SECONDS) {
+        return 0;
+    }
+    if (r->hourglass_seconds < HOURGLASS_MIN_SECONDS || r->hourglass_seconds > HOURGLASS_MAX_SECONDS) {
         return 0;
     }
     if (r->storage_limit < STORAGE_LIMIT_MIN || r->storage_limit > STORAGE_LIMIT_MAX) {
@@ -134,6 +144,7 @@ void app_state_init(void)
     g_threshold_t10 = ALERT_THRESHOLD_T10;
     g_sample_interval = SAMPLE_INTERVAL_SECONDS;
     g_alarm_duration = ALARM_DURATION_SECONDS;
+    g_hourglass_seconds = HOURGLASS_SECONDS;
     g_storage_limit = STORAGE_LIMIT_DEFAULT;
     g_settings_next_index = 0;
     g_settings_next_seq = 0;
@@ -151,6 +162,7 @@ void app_state_init(void)
         g_threshold_t10 = r->threshold_t10;
         g_sample_interval = r->sample_interval;
         g_alarm_duration = r->alarm_duration;
+        g_hourglass_seconds = r->hourglass_seconds;
         g_storage_limit = r->storage_limit;
         g_settings_next_index = (uint16_t)(i + 1u);
         g_settings_next_seq = (uint16_t)(r->seq + 1u);
@@ -169,6 +181,8 @@ void app_save_settings(void)
     r.seq = g_settings_next_seq++;
     r.sample_interval = g_sample_interval;
     r.alarm_duration = g_alarm_duration;
+    r.hourglass_seconds = g_hourglass_seconds;
+    r.reserved = 0;
     r.threshold_t10 = g_threshold_t10;
     r.storage_limit = g_storage_limit;
     r.crc = settings_crc(&r);
@@ -205,6 +219,11 @@ uint8_t app_sample_interval(void)
 uint8_t app_alarm_duration_seconds(void)
 {
     return g_alarm_duration;
+}
+
+uint8_t app_hourglass_seconds(void)
+{
+    return g_hourglass_seconds;
 }
 
 uint16_t app_storage_limit(void)
@@ -275,6 +294,21 @@ uint8_t app_adjust_alarm_duration(int8_t delta_seconds)
         settings_mark_save_pending();
     }
     return g_alarm_duration;
+}
+
+uint8_t app_adjust_hourglass_seconds(int8_t delta_seconds)
+{
+    uint8_t new_seconds;
+    long value;
+
+    value = (long)g_hourglass_seconds + (long)delta_seconds;
+    value = clamp_long(value, HOURGLASS_MIN_SECONDS, HOURGLASS_MAX_SECONDS);
+    new_seconds = (uint8_t)value;
+    if (new_seconds != g_hourglass_seconds) {
+        g_hourglass_seconds = new_seconds;
+        settings_mark_save_pending();
+    }
+    return g_hourglass_seconds;
 }
 
 uint8_t temp_is_valid(int16_t t10)

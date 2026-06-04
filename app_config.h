@@ -33,6 +33,12 @@
 #define ALARM_DURATION_MAX_SECONDS  30u       /* 设置界面允许的最长报警持续时间，单位秒。 */
 #define ALARM_DURATION_STEP_SECONDS 1u        /* 每次按键调整报警持续时间的步进，单位秒。 */
 
+#define HOURGLASS_SECONDS           15u       /* 默认沙漏动画周期，单位秒，同时作为 TMP 平均温度统计窗口。 */
+#define HOURGLASS_MIN_SECONDS       5u        /* 设置界面允许的最短沙漏动画周期，单位秒。 */
+#define HOURGLASS_MAX_SECONDS       60u       /* 设置界面允许的最长沙漏动画周期，单位秒。 */
+#define HOURGLASS_STEP_SECONDS      1u        /* 每次按键调整沙漏动画周期的步进，单位秒。 */
+#define HOURGLASS_FLIP_TICKS        160u      /* 沙漏周期末尾翻转动画持续时间，单位 10ms 节拍，160 表示 1.6 秒。 */
+
 #define SETTINGS_FLASH_START        0x1800u   /* Info Flash 设置记录区起始地址。 */
 #define SETTINGS_FLASH_END          0x1880u   /* Info Flash 设置记录区结束地址，不包含该地址。 */
 #define SETTINGS_MAGIC              0x51A7u   /* 设置记录有效性标识，用于区分空白或无效 Flash 数据。 */

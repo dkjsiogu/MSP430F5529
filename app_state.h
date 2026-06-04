@@ -14,12 +14,14 @@ void app_save_settings(void);                              /* 将当前应用设
 void app_flush_settings(void);                             /* 如有待保存设置，立即写入 Info Flash。 */
 uint8_t app_sample_interval(void);                         /* 获取当前定时采样间隔，单位秒。 */
 uint8_t app_alarm_duration_seconds(void);                  /* 获取当前报警鸣叫时长，单位秒。 */
+uint8_t app_hourglass_seconds(void);                       /* 获取当前沙漏动画周期，单位秒。 */
 uint16_t app_storage_limit(void);                          /* 获取当前 Flash 历史记录目标存储条数。 */
 int16_t app_threshold_t10(void);                           /* 获取当前报警阈值，单位 0.1 摄氏度。 */
 uint8_t app_adjust_sample_interval(int8_t delta_seconds);  /* 调整并持久化采样间隔，返回新间隔秒数。 */
 int16_t app_adjust_threshold_t10(int16_t delta_t10);        /* 调整并持久化报警阈值，返回新阈值。 */
 uint16_t app_adjust_storage_limit(int16_t delta_records);   /* 调整并持久化历史记录存储条数，返回新条数。 */
 uint8_t app_adjust_alarm_duration(int8_t delta_seconds);    /* 调整并持久化报警鸣叫时长，返回新秒数。 */
+uint8_t app_adjust_hourglass_seconds(int8_t delta_seconds); /* 调整并持久化沙漏动画周期，返回新秒数。 */
 uint8_t temp_is_valid(int16_t t10);                         /* 判断一个 0.1 摄氏度温度值是否有效。 */
 uint8_t sample_over_threshold(const TempSample *s);         /* 判断样本中是否有任一路温度超过报警阈值。 */
 
