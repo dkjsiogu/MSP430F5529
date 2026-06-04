@@ -855,12 +855,19 @@ static void epd_draw_hourglass_frame(uint16_t cx, uint16_t cy, uint8_t phase)
         epd_draw_line_i(x, y, (int16_t)(x - 17), (int16_t)(y + 20));
         epd_draw_line_i(x, y, (int16_t)(x + 9), (int16_t)(y + 27));
     } else {
-        epd_fill_rect_i((int16_t)(x - 14), (int16_t)(y - 27), 29u, 2u);
-        epd_fill_rect_i((int16_t)(x - 14), (int16_t)(y + 26), 29u, 2u);
-        epd_draw_line_i((int16_t)(x - 13), (int16_t)(y - 25), x, y);
-        epd_draw_line_i((int16_t)(x + 13), (int16_t)(y - 25), x, y);
-        epd_draw_line_i(x, y, (int16_t)(x - 13), (int16_t)(y + 25));
-        epd_draw_line_i(x, y, (int16_t)(x + 13), (int16_t)(y + 25));
+        epd_fill_rect_i((int16_t)(x - 17), (int16_t)(y - 30), 35u, 2u);
+        epd_fill_rect_i((int16_t)(x - 12), (int16_t)(y - 27), 25u, 1u);
+        epd_fill_rect_i((int16_t)(x - 17), (int16_t)(y + 29), 35u, 2u);
+        epd_fill_rect_i((int16_t)(x - 12), (int16_t)(y + 26), 25u, 1u);
+        epd_draw_line_i((int16_t)(x - 13), (int16_t)(y - 25), (int16_t)(x - 2), (int16_t)(y - 1));
+        epd_draw_line_i((int16_t)(x + 13), (int16_t)(y - 25), (int16_t)(x + 2), (int16_t)(y - 1));
+        epd_draw_line_i((int16_t)(x - 2), (int16_t)(y + 1), (int16_t)(x - 13), (int16_t)(y + 25));
+        epd_draw_line_i((int16_t)(x + 2), (int16_t)(y + 1), (int16_t)(x + 13), (int16_t)(y + 25));
+        epd_fill_rect_i((int16_t)(x - 3), (int16_t)(y - 1), 7u, 2u);
+        epd_pixel((uint16_t)(x - 8), (uint16_t)(y - 17), 1);
+        epd_pixel((uint16_t)(x - 6), (uint16_t)(y - 11), 1);
+        epd_pixel((uint16_t)(x + 7), (uint16_t)(y + 12), 1);
+        epd_pixel((uint16_t)(x + 9), (uint16_t)(y + 18), 1);
     }
 }
 
@@ -871,6 +878,7 @@ static void epd_draw_hourglass_sand(uint16_t cx, uint16_t cy, uint16_t progress,
     uint8_t width;
     uint8_t top_rows;
     uint8_t bottom_rows;
+    uint8_t remaining;
     int16_t x;
     int16_t y;
 
@@ -880,20 +888,31 @@ static void epd_draw_hourglass_sand(uint16_t cx, uint16_t cy, uint16_t progress,
 
     for (row = 0; row < top_rows; row++) {
         y = (int16_t)((int16_t)cy - 4 - row);
-        width = (uint8_t)(2u + row / 2u);
-        epd_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
+        width = (uint8_t)(2u + ((uint16_t)row * row + 18u) / 38u);
+        if (((row + frame) & 0x03u) == 0 && width > 3u) {
+            epd_fill_rect_i((int16_t)(x - width + 1), y, (uint8_t)(width * 2u - 1u), 1u);
+        } else {
+            epd_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
+        }
     }
 
     for (row = 0; row < bottom_rows; row++) {
         y = (int16_t)((int16_t)cy + 23 - row);
-        width = (uint8_t)(2u + (17u - row) / 2u);
-        epd_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
+        remaining = (uint8_t)(bottom_rows - row);
+        width = (uint8_t)(2u + ((uint16_t)remaining * remaining) / 34u);
+        if (((row + frame) & 0x03u) == 2u && width > 4u) {
+            epd_fill_rect_i((int16_t)(x - width + 1), y, (uint8_t)(width * 2u - 1u), 1u);
+        } else {
+            epd_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
+        }
     }
 
     if (progress > 25u && progress < 975u) {
         epd_fill_rect_i(x, (int16_t)((int16_t)cy - 1), 1u, 4u);
         epd_fill_rect_i(x, (int16_t)((int16_t)cy + 5 + (frame & 0x03u) * 3u), 1u, 2u);
         epd_fill_rect_i((int16_t)(x - 1), (int16_t)((int16_t)cy + 15 - (frame & 0x01u)), 3u, 1u);
+        epd_pixel((uint16_t)(x - 4 + (frame & 0x03u)), (uint16_t)((int16_t)cy + 9), 1);
+        epd_pixel((uint16_t)(x + 3 - (frame & 0x01u)), (uint16_t)((int16_t)cy + 18), 1);
     }
 }
 
@@ -1118,12 +1137,19 @@ static void epd_alt_draw_hourglass_frame(uint16_t cx, uint16_t cy, uint8_t phase
         epd_alt_draw_line_i(x, y, (int16_t)(x - 17), (int16_t)(y + 20));
         epd_alt_draw_line_i(x, y, (int16_t)(x + 9), (int16_t)(y + 27));
     } else {
-        epd_alt_fill_rect_i((int16_t)(x - 14), (int16_t)(y - 27), 29u, 2u);
-        epd_alt_fill_rect_i((int16_t)(x - 14), (int16_t)(y + 26), 29u, 2u);
-        epd_alt_draw_line_i((int16_t)(x - 13), (int16_t)(y - 25), x, y);
-        epd_alt_draw_line_i((int16_t)(x + 13), (int16_t)(y - 25), x, y);
-        epd_alt_draw_line_i(x, y, (int16_t)(x - 13), (int16_t)(y + 25));
-        epd_alt_draw_line_i(x, y, (int16_t)(x + 13), (int16_t)(y + 25));
+        epd_alt_fill_rect_i((int16_t)(x - 17), (int16_t)(y - 30), 35u, 2u);
+        epd_alt_fill_rect_i((int16_t)(x - 12), (int16_t)(y - 27), 25u, 1u);
+        epd_alt_fill_rect_i((int16_t)(x - 17), (int16_t)(y + 29), 35u, 2u);
+        epd_alt_fill_rect_i((int16_t)(x - 12), (int16_t)(y + 26), 25u, 1u);
+        epd_alt_draw_line_i((int16_t)(x - 13), (int16_t)(y - 25), (int16_t)(x - 2), (int16_t)(y - 1));
+        epd_alt_draw_line_i((int16_t)(x + 13), (int16_t)(y - 25), (int16_t)(x + 2), (int16_t)(y - 1));
+        epd_alt_draw_line_i((int16_t)(x - 2), (int16_t)(y + 1), (int16_t)(x - 13), (int16_t)(y + 25));
+        epd_alt_draw_line_i((int16_t)(x + 2), (int16_t)(y + 1), (int16_t)(x + 13), (int16_t)(y + 25));
+        epd_alt_fill_rect_i((int16_t)(x - 3), (int16_t)(y - 1), 7u, 2u);
+        epd_alt_pixel((uint16_t)(x - 8), (uint16_t)(y - 17), 1);
+        epd_alt_pixel((uint16_t)(x - 6), (uint16_t)(y - 11), 1);
+        epd_alt_pixel((uint16_t)(x + 7), (uint16_t)(y + 12), 1);
+        epd_alt_pixel((uint16_t)(x + 9), (uint16_t)(y + 18), 1);
     }
 }
 
@@ -1134,6 +1160,7 @@ static void epd_alt_draw_hourglass_sand(uint16_t cx, uint16_t cy, uint16_t progr
     uint8_t width;
     uint8_t top_rows;
     uint8_t bottom_rows;
+    uint8_t remaining;
     int16_t x;
     int16_t y;
 
@@ -1143,20 +1170,31 @@ static void epd_alt_draw_hourglass_sand(uint16_t cx, uint16_t cy, uint16_t progr
 
     for (row = 0; row < top_rows; row++) {
         y = (int16_t)((int16_t)cy - 4 - row);
-        width = (uint8_t)(2u + row / 2u);
-        epd_alt_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
+        width = (uint8_t)(2u + ((uint16_t)row * row + 18u) / 38u);
+        if (((row + frame) & 0x03u) == 0 && width > 3u) {
+            epd_alt_fill_rect_i((int16_t)(x - width + 1), y, (uint8_t)(width * 2u - 1u), 1u);
+        } else {
+            epd_alt_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
+        }
     }
 
     for (row = 0; row < bottom_rows; row++) {
         y = (int16_t)((int16_t)cy + 23 - row);
-        width = (uint8_t)(2u + (17u - row) / 2u);
-        epd_alt_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
+        remaining = (uint8_t)(bottom_rows - row);
+        width = (uint8_t)(2u + ((uint16_t)remaining * remaining) / 34u);
+        if (((row + frame) & 0x03u) == 2u && width > 4u) {
+            epd_alt_fill_rect_i((int16_t)(x - width + 1), y, (uint8_t)(width * 2u - 1u), 1u);
+        } else {
+            epd_alt_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
+        }
     }
 
     if (progress > 25u && progress < 975u) {
         epd_alt_fill_rect_i(x, (int16_t)((int16_t)cy - 1), 1u, 4u);
         epd_alt_fill_rect_i(x, (int16_t)((int16_t)cy + 5 + (frame & 0x03u) * 3u), 1u, 2u);
         epd_alt_fill_rect_i((int16_t)(x - 1), (int16_t)((int16_t)cy + 15 - (frame & 0x01u)), 3u, 1u);
+        epd_alt_pixel((uint16_t)(x - 4 + (frame & 0x03u)), (uint16_t)((int16_t)cy + 9), 1);
+        epd_alt_pixel((uint16_t)(x + 3 - (frame & 0x01u)), (uint16_t)((int16_t)cy + 18), 1);
     }
 }
 

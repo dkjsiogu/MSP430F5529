@@ -8,9 +8,9 @@ void uart_init(void)
     P4SEL |= BIT5;
     UCA1CTL1 |= UCSWRST;
     UCA1CTL1 |= UCSSEL_2;
-    UCA1BR0 = 52;
+    UCA1BR0 = 104;
     UCA1BR1 = 0;
-    UCA1MCTL = UCBRF_1 | UCBRS_0 | UCOS16;
+    UCA1MCTL = UCBRF_3 | UCBRS_0 | UCOS16;
     UCA1CTL1 &= ~UCSWRST;
     UCA1IE |= UCRXIE;
 }

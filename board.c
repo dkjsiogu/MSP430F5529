@@ -8,6 +8,89 @@ static volatile uint16_t g_tick_10ms = 0;
 static volatile uint8_t g_buzzer_alarm_seconds = 0;
 static uint8_t g_buzzer_on = 0;
 
+/* 按 TI 推荐流程把 PMM 核心电压提高一级，保证高主频运行稳定。 */
+static uint8_t pmm_set_vcore_up(uint8_t level)
+{
+    uint16_t pmmrie_backup;
+    uint16_t svsmhctl_backup;
+    uint16_t svsmlctl_backup;
+
+    PMMCTL0_H = PMMPW_H;
+
+    pmmrie_backup = PMMRIE;
+    PMMRIE &= (uint16_t)~(SVMHVLRPE | SVSHPE | SVMLVLRPE | SVSLPE | SVMHVLRIE |
+                          SVMHIE | SVSMHDLYIE | SVMLVLRIE | SVMLIE | SVSMLDLYIE);
+    svsmhctl_backup = SVSMHCTL;
+    svsmlctl_backup = SVSMLCTL;
+
+    PMMIFG = 0;
+    SVSMHCTL = SVMHE | SVSHE | (uint16_t)(SVSMHRRL0 * level);
+    while ((PMMIFG & SVSMHDLYIFG) == 0) {
+        ;
+    }
+    PMMIFG &= (uint16_t)~SVSMHDLYIFG;
+
+    if (PMMIFG & SVMHIFG) {
+        PMMIFG &= (uint16_t)~SVSMHDLYIFG;
+        SVSMHCTL = svsmhctl_backup;
+        while ((PMMIFG & SVSMHDLYIFG) == 0) {
+            ;
+        }
+        PMMIFG &= (uint16_t)~(SVMHVLRIFG | SVMHIFG | SVSMHDLYIFG |
+                              SVMLVLRIFG | SVMLIFG | SVSMLDLYIFG);
+        PMMRIE = pmmrie_backup;
+        PMMCTL0_H = 0;
+        return 0;
+    }
+
+    SVSMHCTL |= (uint16_t)(SVSHRVL0 * level);
+    while ((PMMIFG & SVSMHDLYIFG) == 0) {
+        ;
+    }
+    PMMIFG &= (uint16_t)~SVSMHDLYIFG;
+
+    PMMCTL0_L = (uint8_t)(PMMCOREV0 * level);
+    SVSMLCTL = SVMLE | (uint16_t)(SVSMLRRL0 * level) |
+               SVSLE | (uint16_t)(SVSLRVL0 * level);
+    while ((PMMIFG & SVSMLDLYIFG) == 0) {
+        ;
+    }
+    PMMIFG &= (uint16_t)~SVSMLDLYIFG;
+
+    SVSMLCTL &= (uint16_t)(SVSLRVL0 | SVSLRVL1 | SVSMLRRL0 | SVSMLRRL1 | SVSMLRRL2);
+    svsmlctl_backup &= (uint16_t)~(SVSLRVL0 | SVSLRVL1 | SVSMLRRL0 | SVSMLRRL1 | SVSMLRRL2);
+    SVSMLCTL |= svsmlctl_backup;
+
+    SVSMHCTL &= (uint16_t)(SVSHRVL0 | SVSHRVL1 | SVSMHRRL0 | SVSMHRRL1 | SVSMHRRL2);
+    svsmhctl_backup &= (uint16_t)~(SVSHRVL0 | SVSHRVL1 | SVSMHRRL0 | SVSMHRRL1 | SVSMHRRL2);
+    SVSMHCTL |= svsmhctl_backup;
+
+    while (((PMMIFG & SVSMLDLYIFG) == 0) && ((PMMIFG & SVSMHDLYIFG) == 0)) {
+        ;
+    }
+    PMMIFG &= (uint16_t)~(SVMHVLRIFG | SVMHIFG | SVSMHDLYIFG |
+                          SVMLVLRIFG | SVMLIFG | SVSMLDLYIFG);
+
+    PMMRIE = pmmrie_backup;
+    PMMCTL0_H = 0;
+    return 1;
+}
+
+/* 逐级提高 VCore 到目标等级，16MHz 使用 PMMCOREV_2。 */
+static void pmm_set_vcore(uint8_t target_level)
+{
+    uint8_t level;
+    uint8_t current_level;
+
+    target_level &= PMMCOREV_3;
+    current_level = (uint8_t)(PMMCTL0 & PMMCOREV_3);
+    for (level = (uint8_t)(current_level + 1u); level <= target_level; level++) {
+        while (!pmm_set_vcore_up(level)) {
+            ;
+        }
+    }
+}
+
 void delay_ms(uint16_t ms)
 {
     while (ms--) {
@@ -17,12 +100,14 @@ void delay_ms(uint16_t ms)
 
 void clock_init(void)
 {
+    pmm_set_vcore(PMMCOREV_2);
+
     UCSCTL3 = SELREF_2;
     UCSCTL4 = SELA_2 | SELS_4 | SELM_4;
     __bis_SR_register(SCG0);
     UCSCTL0 = 0;
     UCSCTL1 = DCORSEL_5;
-    UCSCTL2 = FLLD_0 | 243u;
+    UCSCTL2 = FLLD_0 | 487u;
     UCSCTL5 = 0;
     __bic_SR_register(SCG0);
     delay_ms(250);

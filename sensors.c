@@ -243,7 +243,7 @@ static void i2c_init(void)
     UCB0CTL1 |= UCSWRST;
     UCB0CTL0 = UCMST | UCMODE_3 | UCSYNC;
     UCB0CTL1 = UCSWRST | UCSSEL_2;
-    UCB0BR0 = 80;
+    UCB0BR0 = 160;
     UCB0BR1 = 0;
     UCB0CTL1 &= ~UCSWRST;
 }

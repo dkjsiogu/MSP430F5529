@@ -9,8 +9,8 @@
 #include <msp430.h>
 #include <stdint.h>
 
-#define MCLK_HZ                     8000000UL /* 主系统时钟频率，单位 Hz。 */
-#define SMCLK_HZ                    8000000UL /* 子系统时钟频率，供 UART、I2C、蜂鸣器等外设使用。 */
+#define MCLK_HZ                     16000000UL /* 主系统时钟频率，单位 Hz。 */
+#define SMCLK_HZ                    16000000UL /* 子系统时钟频率，供 UART、I2C、蜂鸣器等外设使用。 */
 #define BOARD_TICK_HZ               100u      /* 板级系统节拍频率，100Hz 表示 10ms 一次中断。 */
 #define BOARD_TICKS_PER_SECOND      100u      /* 1 秒对应的 10ms 节拍数量。 */
 #define SAMPLE_INTERVAL_SECONDS     3u        /* 默认温度采样间隔，单位秒。 */
