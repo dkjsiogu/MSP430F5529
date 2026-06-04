@@ -11,6 +11,7 @@
 void epd_init(void);                                       /* 初始化 EPD GPIO、SPI、控制器状态和首次渲染。 */
 void epd_show_current_auto(const TempSample *s);           /* 提交最新温度样本作为当前目标画面。 */
 void epd_show_history_page(uint16_t start);                /* 提交从指定记录序号开始的历史页画面。 */
+void epd_show_history_playback(void);                      /* 进入 Flash 历史记录自动滚动播放页。 */
 void epd_show_settings_page(uint8_t selected, uint8_t editing); /* 提交设置页画面，selected 为当前项目，editing 表示正在改值。 */
 void epd_render_task(void);                                /* 通过局部刷新渲染一个待处理的整屏目标画面。 */
 uint8_t epd_render_pending(void);                          /* 返回当前是否还有待渲染画面。 */

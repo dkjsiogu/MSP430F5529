@@ -129,6 +129,7 @@
 #define EPD_PARTIAL_POST_UPDATE_MS  60u
 #define EPD_NO_BUSY_FALLBACK_MS     120u
 #define EPD_AUTO_FRAME_TICKS        12u       /* 自动页两帧之间留出约 120ms 给按键和采样。 */
+#define EPD_HISTORY_SCROLL_TICKS    160u      /* 历史页约 1.6 秒滚动一条记录，并重新读取 Flash。 */
 #define EPD_STARTUP_SETTLE_MS       500u
 #define EPD_RESET_PRE_MS            50u
 #define EPD_RESET_LOW_MS            100u

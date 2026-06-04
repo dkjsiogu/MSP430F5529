@@ -12,6 +12,7 @@
 #define BUTTON_MODE_MAIN            0u
 #define BUTTON_MODE_SETTINGS_SELECT 1u
 #define BUTTON_MODE_SETTINGS_EDIT   2u
+#define BUTTON_MODE_HISTORY         3u
 
 #define SETTINGS_ITEM_SAMPLE        0u
 #define SETTINGS_ITEM_ALARM_TEMP    1u
@@ -174,7 +175,13 @@ static void buttons_enter_settings(void)
     buttons_show_settings();
 }
 
-static void buttons_exit_settings(void)
+static void buttons_enter_history(void)
+{
+    g_button_mode = BUTTON_MODE_HISTORY;
+    epd_show_history_playback();
+}
+
+static void buttons_return_main(void)
 {
     g_button_mode = BUTTON_MODE_MAIN;
     app_flush_settings();
@@ -239,7 +246,9 @@ static void buttons_confirm_setting(void)
 
 void buttons_action_s1(const TempSample *last_sample, uint8_t has_sample)
 {
-    if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {
+    if (g_button_mode == BUTTON_MODE_HISTORY) {
+        buttons_return_main();
+    } else if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {
         buttons_move_setting(-1);
     } else if (g_button_mode == BUTTON_MODE_SETTINGS_EDIT) {
         buttons_adjust_setting(last_sample, has_sample, 1);
@@ -251,7 +260,11 @@ void buttons_action_s1(const TempSample *last_sample, uint8_t has_sample)
 
 void buttons_action_s2(const TempSample *last_sample, uint8_t has_sample)
 {
-    if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {
+    if (g_button_mode == BUTTON_MODE_MAIN) {
+        (void)last_sample;
+        (void)has_sample;
+        buttons_enter_history();
+    } else if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {
         buttons_move_setting(1);
     } else if (g_button_mode == BUTTON_MODE_SETTINGS_EDIT) {
         buttons_adjust_setting(last_sample, has_sample, -1);
@@ -268,7 +281,7 @@ void buttons_action_s3(const TempSample *last_sample, uint8_t has_sample)
     if (g_button_mode == BUTTON_MODE_MAIN) {
         buttons_enter_settings();
     } else {
-        buttons_exit_settings();
+        buttons_return_main();
     }
 }
 
@@ -278,8 +291,12 @@ void buttons_action_s4(const TempSample *last_sample, uint8_t has_sample)
     (void)has_sample;
     if (g_button_mode == BUTTON_MODE_MAIN) {
         buttons_manual_refresh();
-    } else {
+    } else if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT ||
+               g_button_mode == BUTTON_MODE_SETTINGS_EDIT) {
         buttons_confirm_setting();
+    } else {
+        (void)last_sample;
+        (void)has_sample;
     }
 }
 

@@ -92,8 +92,10 @@ static uint8_t g_epd_render_dirty = 1;
 static uint8_t g_epd_has_target_sample = 0;
 static uint8_t g_epd_settings_selected = 0;
 static uint8_t g_epd_settings_editing = 0;
+static uint8_t g_epd_history_playback = 0;
 static uint16_t g_epd_target_history_start = 0;
 static uint16_t g_epd_last_auto_frame_tick = 0;
+static uint16_t g_epd_last_history_scroll_tick = 0;
 static TempSample g_epd_target_sample;
 static uint8_t epd_buf[EPD_BUF_SIZE];
 static uint8_t g_anim_frame = 0;
@@ -119,6 +121,38 @@ static uint8_t epd_auto_frame_due(void)
         return 0;
     }
     return board_tick10_elapsed(g_epd_last_auto_frame_tick, EPD_AUTO_FRAME_TICKS);
+}
+
+static uint16_t epd_history_latest_start(uint16_t count)
+{
+    if (count <= HISTORY_ROWS_ON_EPD) {
+        return 0;
+    }
+    return (uint16_t)(count - HISTORY_ROWS_ON_EPD);
+}
+
+static uint8_t epd_history_frame_due(void)
+{
+    uint16_t count;
+
+    if (!g_epd_history_playback || g_epd_render_view != EPD_VIEW_HISTORY) {
+        return 0;
+    }
+    if (!board_tick10_elapsed(g_epd_last_history_scroll_tick, EPD_HISTORY_SCROLL_TICKS)) {
+        return 0;
+    }
+
+    count = history_count();
+    if (count == 0 || count <= HISTORY_ROWS_ON_EPD) {
+        g_epd_target_history_start = 0;
+    } else {
+        g_epd_target_history_start++;
+        if (g_epd_target_history_start >= count) {
+            g_epd_target_history_start = 0;
+        }
+    }
+    g_epd_last_history_scroll_tick = board_tick10();
+    return 1;
 }
 
 static void epd_bus_idle(void)
@@ -522,7 +556,9 @@ void epd_init(void)
     g_epd_has_target_sample = 0;
     g_epd_render_view = EPD_VIEW_CURRENT;
     g_epd_render_dirty = 1;
+    g_epd_history_playback = 0;
     g_epd_last_auto_frame_tick = board_tick10();
+    g_epd_last_history_scroll_tick = board_tick10();
 }
 
 static void epd_alt_init(void)
@@ -1032,6 +1068,7 @@ static void epd_show_current(const TempSample *s)
 
 void epd_force_next_current_refresh(void)
 {
+    g_epd_history_playback = 0;
     if (g_epd_has_target_sample) {
         g_epd_render_view = EPD_VIEW_CURRENT;
     }
@@ -1065,25 +1102,52 @@ static void record_to_line(const TempRecord *r, char *line)
     (void)append_t10(p, r->tmp_local_t10);
 }
 
+static uint16_t history_row_index(uint16_t start, uint8_t row, uint16_t count)
+{
+    uint16_t index;
+
+    index = (uint16_t)(start + row);
+    if (index >= count && count > HISTORY_ROWS_ON_EPD) {
+        index = (uint16_t)(index - count);
+    }
+    return index;
+}
+
+static void history_meta_line(uint16_t start, uint16_t count, char *line)
+{
+    char *p;
+
+    p = line;
+    if (count == 0) {
+        (void)append_str(p, "0 REC");
+        return;
+    }
+    p = append_u16(p, (uint16_t)(start + 1u));
+    *p++ = '/';
+    p = append_u16(p, count);
+    (void)append_str(p, " AUTO");
+}
+
 static void epd_alt_show_history(uint16_t start)
 {
     uint16_t count;
+    uint16_t index;
     uint8_t row;
     TempRecord r;
     char line[40];
-    char *p;
 
     count = history_count();
     if (start >= count && count > 0) {
         start = 0;
     }
+    if (count <= HISTORY_ROWS_ON_EPD) {
+        start = 0;
+    }
 
     epd_alt_clear_buffer();
-    p = line;
-    p = append_str(p, "HISTORY ");
-    p = append_u16(p, count);
-    (void)append_str(p, " REC");
-    epd_alt_draw_string(0, 0, line, 2);
+    epd_alt_draw_string(0, 0, "FLASH LOG", 2);
+    history_meta_line(start, count, line);
+    epd_alt_draw_string(0, 22, line, 1);
 
     if (count == 0) {
         epd_alt_draw_string(0, 44, "NO RECORD", 2);
@@ -1092,9 +1156,10 @@ static void epd_alt_show_history(uint16_t start)
     }
 
     for (row = 0; row < HISTORY_ROWS_ON_EPD; row++) {
-        if (history_get((uint16_t)(start + row), &r)) {
+        index = history_row_index(start, row, count);
+        if (index < count && history_get(index, &r)) {
             record_to_line(&r, line);
-            epd_alt_draw_string(0, (uint16_t)(24u + row * 18u), line, 1);
+            epd_alt_draw_string(0, (uint16_t)(40u + row * 18u), line, 1);
         }
     }
 
@@ -1104,22 +1169,23 @@ static void epd_alt_show_history(uint16_t start)
 static void epd_show_history(uint16_t start)
 {
     uint16_t count;
+    uint16_t index;
     uint8_t row;
     TempRecord r;
     char line[40];
-    char *p;
 
     count = history_count();
     if (start >= count && count > 0) {
         start = 0;
     }
+    if (count <= HISTORY_ROWS_ON_EPD) {
+        start = 0;
+    }
 
     epd_clear_buffer();
-    p = line;
-    p = append_str(p, "HISTORY ");
-    p = append_u16(p, count);
-    (void)append_str(p, " REC");
-    epd_draw_string(0, 0, line, 2);
+    epd_draw_string(0, 0, "FLASH LOG", 2);
+    history_meta_line(start, count, line);
+    epd_draw_string(132, 4, line, 1);
 
     if (count == 0) {
         epd_draw_string(0, 44, "NO RECORD", 2);
@@ -1128,9 +1194,10 @@ static void epd_show_history(uint16_t start)
     }
 
     for (row = 0; row < HISTORY_ROWS_ON_EPD; row++) {
-        if (history_get((uint16_t)(start + row), &r)) {
+        index = history_row_index(start, row, count);
+        if (index < count && history_get(index, &r)) {
             record_to_line(&r, line);
-            epd_draw_string(0, (uint16_t)(24u + row * 18u), line, 1);
+            epd_draw_string(0, (uint16_t)(28u + row * 18u), line, 1);
         }
     }
 
@@ -1141,7 +1208,21 @@ void epd_show_history_page(uint16_t start)
 {
     g_epd_target_history_start = start;
     g_epd_auto_update = 0;
+    g_epd_history_playback = 0;
     g_epd_render_view = EPD_VIEW_HISTORY;
+    epd_request_render(1);
+}
+
+void epd_show_history_playback(void)
+{
+    uint16_t count;
+
+    count = history_count();
+    g_epd_target_history_start = epd_history_latest_start(count);
+    g_epd_auto_update = 0;
+    g_epd_history_playback = 1;
+    g_epd_render_view = EPD_VIEW_HISTORY;
+    g_epd_last_history_scroll_tick = board_tick10();
     epd_request_render(1);
 }
 
@@ -1153,6 +1234,7 @@ void epd_show_settings_page(uint8_t selected, uint8_t editing)
     g_epd_settings_selected = selected;
     g_epd_settings_editing = editing ? 1u : 0u;
     g_epd_auto_update = 0;
+    g_epd_history_playback = 0;
     g_epd_render_view = EPD_VIEW_SETTINGS;
     epd_request_render(1);
 }
@@ -1160,10 +1242,13 @@ void epd_show_settings_page(uint8_t selected, uint8_t editing)
 void epd_render_task(void)
 {
     if (!g_epd_render_dirty) {
-        if (!epd_auto_frame_due()) {
+        if (epd_history_frame_due()) {
+            g_epd_render_dirty = 1;
+        } else if (epd_auto_frame_due()) {
+            g_epd_render_dirty = 1;
+        } else {
             return;
         }
-        g_epd_render_dirty = 1;
     }
 
     g_epd_render_dirty = 0;
@@ -1205,6 +1290,7 @@ uint8_t epd_auto_enabled(void)
 void epd_resume_auto(void)
 {
     g_epd_auto_update = 1;
+    g_epd_history_playback = 0;
     epd_force_next_current_refresh();
 }
 
@@ -1218,6 +1304,7 @@ void epd_use_alt_auto(void)
 {
     g_epd_driver = EPD_DRIVER_SPD2701;
     g_epd_auto_update = 1;
+    g_epd_history_playback = 0;
     epd_alt_init();
     epd_force_next_current_refresh();
 }
