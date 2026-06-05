@@ -3,6 +3,7 @@
 #include "board.h"
 #include "flash_log.h"
 #include "format.h"
+#include "image_frames.h"
 static const uint8_t font5x7[96][5] = {
     {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00},
     {0x00,0x07,0x00,0x07,0x00}, {0x14,0x7F,0x14,0x7F,0x14},
@@ -84,6 +85,7 @@ static const uint8_t epd_alt_lut[90] = {
 #define EPD_VIEW_CURRENT            0u /* 当前温度主界面渲染目标。 */
 #define EPD_VIEW_HISTORY            1u /* Flash 历史记录界面渲染目标。 */
 #define EPD_VIEW_SETTINGS           2u /* 设置界面渲染目标。 */
+#define EPD_VIEW_GIF                3u /* 全屏 GIF 动画播放界面渲染目标。 */
 #define EPD_SETTINGS_ROWS           5u /* 设置页面显示的配置项数量。 */
 
 static uint8_t g_epd_auto_update = 1;
@@ -94,12 +96,14 @@ static uint8_t g_epd_has_target_sample = 0;
 static uint8_t g_epd_settings_selected = 0;
 static uint8_t g_epd_settings_editing = 0;
 static uint8_t g_epd_history_playback = 0;
+static uint8_t g_epd_gif_playback = 0;
 static uint16_t g_epd_target_history_start = 0;
 static uint16_t g_epd_last_auto_frame_tick = 0;
 static uint16_t g_epd_last_history_scroll_tick = 0;
+static uint16_t g_epd_last_gif_frame_tick = 0;
 static TempSample g_epd_target_sample;
 static uint8_t epd_buf[EPD_BUF_SIZE];
-static uint8_t g_anim_frame = 0;
+static uint8_t g_mascot_frame_index = 0;
 static uint16_t g_hourglass_cycle_start_tick = 0;
 static int32_t g_tmp_avg_sum_t10 = 0;
 static uint8_t g_tmp_avg_count = 0;
@@ -110,16 +114,6 @@ static void epd_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale
 
 /* 前置声明备用驱动字符串绘制函数，供沙漏字幕提前调用。 */
 static void epd_alt_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale);
-
-/* 返回当前动画帧号并推进到下一帧，用于右侧小动画循环。 */
-static uint8_t epd_next_anim_frame(void)
-{
-    uint8_t frame;
-
-    frame = g_anim_frame;
-    g_anim_frame = (uint8_t)((g_anim_frame + 1u) & 0x07u);
-    return frame;
-}
 
 /* 计算当前沙漏周期对应的 10ms 节拍数。 */
 static uint16_t epd_hourglass_period_ticks(void)
@@ -224,6 +218,15 @@ static uint8_t epd_auto_frame_due(void)
         return 0;
     }
     return board_tick10_elapsed(g_epd_last_auto_frame_tick, EPD_AUTO_FRAME_TICKS);
+}
+
+/* 判断全屏 GIF 播放界面是否需要推进到下一帧。 */
+static uint8_t epd_gif_frame_due(void)
+{
+    if (!g_epd_gif_playback || g_epd_render_view != EPD_VIEW_GIF) {
+        return 0;
+    }
+    return board_tick10_elapsed(g_epd_last_gif_frame_tick, EPD_AUTO_FRAME_TICKS);
 }
 
 /* 根据历史记录数量计算自动播放时优先显示最近记录的起始下标。 */
@@ -692,9 +695,12 @@ void epd_init(void)
     g_epd_render_view = EPD_VIEW_CURRENT;
     g_epd_render_dirty = 1;
     g_epd_history_playback = 0;
+    g_epd_gif_playback = 0;
     g_epd_last_auto_frame_tick = board_tick10();
     g_epd_last_history_scroll_tick = board_tick10();
+    g_epd_last_gif_frame_tick = board_tick10();
     g_hourglass_cycle_start_tick = board_tick10();
+    g_mascot_frame_index = 0;
     g_tmp_avg_sum_t10 = 0;
     g_tmp_avg_count = 0;
     g_tmp_avg_display_t10 = INVALID_T10;
@@ -768,156 +774,135 @@ static void epd_pixel(uint16_t x, uint16_t y, uint8_t black)
     }
 }
 
-/* 在 SSD1673 帧缓冲中绘制一个黑色矩形，允许坐标为负数裁剪。 */
-static void epd_fill_rect_i(int16_t x, int16_t y, uint8_t w, uint8_t h)
+/* 根据沙漏周期时间选择图片关键帧，末尾按翻转时长映射到最后几帧。 */
+static uint8_t epd_hourglass_asset_frame_index(const ImageSequence *seq)
 {
-    uint8_t dx;
-    uint8_t dy;
-    int16_t px;
-    int16_t py;
+    uint16_t elapsed;
+    uint16_t period_ticks;
+    uint16_t normal_count;
+    uint8_t phase;
+    uint8_t index;
 
-    for (dy = 0; dy < h; dy++) {
-        py = (int16_t)(y + dy);
-        if (py < 0) {
-            continue;
+    if (seq->frame_count == 0) {
+        return 0;
+    }
+
+    elapsed = epd_hourglass_elapsed_ticks();
+    period_ticks = epd_hourglass_period_ticks();
+    if (period_ticks == 0) {
+        return 0;
+    }
+    normal_count = seq->frame_count;
+    if (normal_count > 3u) {
+        normal_count = (uint16_t)(normal_count - 3u);
+    }
+    if (normal_count == 0) {
+        return 0;
+    }
+
+    phase = epd_hourglass_flip_phase(elapsed, period_ticks);
+    if (phase > 0 && seq->frame_count > normal_count) {
+        index = (uint8_t)(normal_count + phase - 1u);
+        if (index >= seq->frame_count) {
+            index = (uint8_t)(seq->frame_count - 1u);
         }
-        for (dx = 0; dx < w; dx++) {
-            px = (int16_t)(x + dx);
-            if (px >= 0) {
-                epd_pixel((uint16_t)px, (uint16_t)py, 1);
+        return index;
+    }
+
+    index = (uint8_t)(((uint32_t)elapsed * normal_count) / period_ticks);
+    if (index >= normal_count) {
+        index = (uint8_t)(normal_count - 1u);
+    }
+    return index;
+}
+
+/* 将一帧 1bpp 图片资源贴到 SSD1673 帧缓冲，bit=1 的像素绘制为黑色。 */
+static void epd_draw_image_frame(const ImageFrame *frame, int16_t x, int16_t y, uint8_t scale)
+{
+    uint16_t px;
+    uint16_t py;
+    uint8_t bit;
+    uint8_t sx;
+    uint8_t sy;
+    const uint8_t *row;
+
+    if (scale == 0) {
+        scale = 1;
+    }
+
+    for (py = 0; py < frame->height; py++) {
+        row = frame->data + (uint16_t)(py * frame->stride);
+        for (px = 0; px < frame->width; px++) {
+            bit = (uint8_t)(0x80u >> (px & 7u));
+            if ((row[px >> 3] & bit) == 0) {
+                continue;
+            }
+            for (sy = 0; sy < scale; sy++) {
+                for (sx = 0; sx < scale; sx++) {
+                    epd_pixel((uint16_t)(x + (int16_t)(px * scale + sx)),
+                              (uint16_t)(y + (int16_t)(py * scale + sy)), 1);
+                }
             }
         }
     }
 }
 
-/* 在 SSD1673 帧缓冲中绘制一条黑色直线。 */
-static void epd_draw_line_i(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
+/* 从图片序列中选择一帧并贴到 SSD1673 帧缓冲。 */
+static void epd_draw_image_sequence(const ImageSequence *seq, uint8_t index, int16_t x, int16_t y, uint8_t scale)
 {
-    int16_t dx;
-    int16_t dy;
-    int16_t sx;
-    int16_t sy;
-    int16_t err;
-    int16_t e2;
-
-    dx = (x0 < x1) ? (int16_t)(x1 - x0) : (int16_t)(x0 - x1);
-    dy = (y0 < y1) ? (int16_t)(y1 - y0) : (int16_t)(y0 - y1);
-    sx = (x0 < x1) ? 1 : -1;
-    sy = (y0 < y1) ? 1 : -1;
-    err = (int16_t)(dx - dy);
-
-    while (1) {
-        if (x0 >= 0 && y0 >= 0) {
-            epd_pixel((uint16_t)x0, (uint16_t)y0, 1);
-        }
-        if (x0 == x1 && y0 == y1) {
-            break;
-        }
-        e2 = (int16_t)(err * 2);
-        if (e2 > (int16_t)(-dy)) {
-            err = (int16_t)(err - dy);
-            x0 = (int16_t)(x0 + sx);
-        }
-        if (e2 < dx) {
-            err = (int16_t)(err + dx);
-            y0 = (int16_t)(y0 + sy);
-        }
+    if (seq->frame_count == 0) {
+        return;
     }
+    if (index >= seq->frame_count) {
+        index = (uint8_t)(seq->frame_count - 1u);
+    }
+    epd_draw_image_frame(&seq->frames[index], x, y, scale);
 }
 
-/* 在 SSD1673 帧缓冲中绘制沙漏外框，phase 为 0 时竖直，1-3 为翻转过程。 */
-static void epd_draw_hourglass_frame(uint16_t cx, uint16_t cy, uint8_t phase)
+/* 计算图片序列在指定屏幕方向上的居中坐标，避免换资源尺寸后手工改位置。 */
+static int16_t epd_image_center_coord(const ImageSequence *seq, uint16_t screen_size, uint8_t horizontal)
 {
-    int16_t x;
-    int16_t y;
+    uint16_t image_size;
+    uint8_t scale;
 
-    x = (int16_t)cx;
-    y = (int16_t)cy;
-    if (phase == 1u) {
-        epd_draw_line_i((int16_t)(x - 17), (int16_t)(y - 20), (int16_t)(x + 9), (int16_t)(y - 27));
-        epd_draw_line_i((int16_t)(x - 9), (int16_t)(y + 27), (int16_t)(x + 17), (int16_t)(y + 20));
-        epd_draw_line_i((int16_t)(x - 17), (int16_t)(y - 20), x, y);
-        epd_draw_line_i((int16_t)(x + 9), (int16_t)(y - 27), x, y);
-        epd_draw_line_i(x, y, (int16_t)(x - 9), (int16_t)(y + 27));
-        epd_draw_line_i(x, y, (int16_t)(x + 17), (int16_t)(y + 20));
-    } else if (phase == 2u) {
-        epd_fill_rect_i((int16_t)(x - 27), (int16_t)(y - 13), 2u, 27u);
-        epd_fill_rect_i((int16_t)(x + 26), (int16_t)(y - 13), 2u, 27u);
-        epd_draw_line_i((int16_t)(x - 25), (int16_t)(y - 13), x, y);
-        epd_draw_line_i((int16_t)(x - 25), (int16_t)(y + 13), x, y);
-        epd_draw_line_i(x, y, (int16_t)(x + 26), (int16_t)(y - 13));
-        epd_draw_line_i(x, y, (int16_t)(x + 26), (int16_t)(y + 13));
-    } else if (phase == 3u) {
-        epd_draw_line_i((int16_t)(x - 9), (int16_t)(y - 27), (int16_t)(x + 17), (int16_t)(y - 20));
-        epd_draw_line_i((int16_t)(x - 17), (int16_t)(y + 20), (int16_t)(x + 9), (int16_t)(y + 27));
-        epd_draw_line_i((int16_t)(x - 9), (int16_t)(y - 27), x, y);
-        epd_draw_line_i((int16_t)(x + 17), (int16_t)(y - 20), x, y);
-        epd_draw_line_i(x, y, (int16_t)(x - 17), (int16_t)(y + 20));
-        epd_draw_line_i(x, y, (int16_t)(x + 9), (int16_t)(y + 27));
-    } else {
-        epd_fill_rect_i((int16_t)(x - 17), (int16_t)(y - 30), 35u, 2u);
-        epd_fill_rect_i((int16_t)(x - 12), (int16_t)(y - 27), 25u, 1u);
-        epd_fill_rect_i((int16_t)(x - 17), (int16_t)(y + 29), 35u, 2u);
-        epd_fill_rect_i((int16_t)(x - 12), (int16_t)(y + 26), 25u, 1u);
-        epd_draw_line_i((int16_t)(x - 13), (int16_t)(y - 25), (int16_t)(x - 2), (int16_t)(y - 1));
-        epd_draw_line_i((int16_t)(x + 13), (int16_t)(y - 25), (int16_t)(x + 2), (int16_t)(y - 1));
-        epd_draw_line_i((int16_t)(x - 2), (int16_t)(y + 1), (int16_t)(x - 13), (int16_t)(y + 25));
-        epd_draw_line_i((int16_t)(x + 2), (int16_t)(y + 1), (int16_t)(x + 13), (int16_t)(y + 25));
-        epd_fill_rect_i((int16_t)(x - 3), (int16_t)(y - 1), 7u, 2u);
-        epd_pixel((uint16_t)(x - 8), (uint16_t)(y - 17), 1);
-        epd_pixel((uint16_t)(x - 6), (uint16_t)(y - 11), 1);
-        epd_pixel((uint16_t)(x + 7), (uint16_t)(y + 12), 1);
-        epd_pixel((uint16_t)(x + 9), (uint16_t)(y + 18), 1);
+    if (seq->frame_count == 0) {
+        return 0;
     }
+
+    scale = seq->default_scale;
+    if (scale == 0) {
+        scale = 1;
+    }
+    image_size = horizontal ? seq->frames[0].width : seq->frames[0].height;
+    image_size = (uint16_t)(image_size * scale);
+    if (image_size >= screen_size) {
+        return 0;
+    }
+    return (int16_t)((screen_size - image_size) / 2u);
 }
 
-/* 在 SSD1673 帧缓冲中按周期进度绘制沙漏内部流沙。 */
-static void epd_draw_hourglass_sand(uint16_t cx, uint16_t cy, uint16_t progress, uint8_t frame)
+/* 按渲染节拍循环推进图片序列帧，供 GIF 转换资源播放。 */
+static uint8_t epd_image_next_loop_frame(const ImageSequence *seq, uint8_t *cursor)
 {
-    uint8_t row;
-    uint8_t width;
-    uint8_t top_rows;
-    uint8_t bottom_rows;
-    uint8_t remaining;
-    int16_t x;
-    int16_t y;
+    uint8_t index;
 
-    x = (int16_t)cx;
-    top_rows = (uint8_t)(((uint32_t)(1000u - progress) * 18u + 999u) / 1000u);
-    bottom_rows = (uint8_t)(((uint32_t)progress * 18u) / 1000u);
-
-    for (row = 0; row < top_rows; row++) {
-        y = (int16_t)((int16_t)cy - 4 - row);
-        width = (uint8_t)(2u + ((uint16_t)row * row + 18u) / 38u);
-        if (((row + frame) & 0x03u) == 0 && width > 3u) {
-            epd_fill_rect_i((int16_t)(x - width + 1), y, (uint8_t)(width * 2u - 1u), 1u);
-        } else {
-            epd_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
-        }
+    if (seq->frame_count == 0) {
+        return 0;
+    }
+    if (*cursor >= seq->frame_count) {
+        *cursor = 0;
     }
 
-    for (row = 0; row < bottom_rows; row++) {
-        y = (int16_t)((int16_t)cy + 23 - row);
-        remaining = (uint8_t)(bottom_rows - row);
-        width = (uint8_t)(2u + ((uint16_t)remaining * remaining) / 34u);
-        if (((row + frame) & 0x03u) == 2u && width > 4u) {
-            epd_fill_rect_i((int16_t)(x - width + 1), y, (uint8_t)(width * 2u - 1u), 1u);
-        } else {
-            epd_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
-        }
+    index = *cursor;
+    *cursor = (uint8_t)(*cursor + 1u);
+    if (*cursor >= seq->frame_count) {
+        *cursor = 0;
     }
-
-    if (progress > 25u && progress < 975u) {
-        epd_fill_rect_i(x, (int16_t)((int16_t)cy - 1), 1u, 4u);
-        epd_fill_rect_i(x, (int16_t)((int16_t)cy + 5 + (frame & 0x03u) * 3u), 1u, 2u);
-        epd_fill_rect_i((int16_t)(x - 1), (int16_t)((int16_t)cy + 15 - (frame & 0x01u)), 3u, 1u);
-        epd_pixel((uint16_t)(x - 4 + (frame & 0x03u)), (uint16_t)((int16_t)cy + 9), 1);
-        epd_pixel((uint16_t)(x + 3 - (frame & 0x01u)), (uint16_t)((int16_t)cy + 18), 1);
-    }
+    return index;
 }
 
-/* 在 SSD1673 帧缓冲中绘制沙漏下方的周期和 TMP 平均温度文字。 */
-static void epd_draw_hourglass_caption(uint16_t cx, uint16_t cy)
+/* 在 SSD1673 帧缓冲中绘制沙漏图片下方的周期和 TMP 平均温度文字。 */
+static void epd_draw_hourglass_caption(uint16_t x, uint16_t y)
 {
     char line[16];
     char *p;
@@ -925,36 +910,32 @@ static void epd_draw_hourglass_caption(uint16_t cx, uint16_t cy)
     p = line;
     p = append_u16(p, app_hourglass_seconds());
     (void)append_str(p, "s AVG");
-    epd_draw_string((uint16_t)(cx - 20u), (uint16_t)(cy + 31u), line, 1);
+    epd_draw_string(x, y, line, 1);
 
     p = line;
     p = append_t10(p, g_tmp_avg_display_t10);
     (void)append_str(p, "C");
-    epd_draw_string((uint16_t)(cx - 15u), (uint16_t)(cy + 41u), line, 1);
+    epd_draw_string((uint16_t)(x + 5u), (uint16_t)(y + 10u), line, 1);
 }
 
-/* 在 SSD1673 主界面右侧绘制沙漏动画和 TMP 周期平均温度。 */
-static void epd_draw_hourglass(uint16_t cx, uint16_t cy, uint8_t frame)
+/* 在 SSD1673 主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
+static void epd_draw_hourglass(int16_t x, int16_t y)
 {
-    uint16_t elapsed;
-    uint16_t period_ticks;
-    uint16_t progress;
-    uint8_t phase;
+    uint8_t frame_index;
 
-    elapsed = epd_hourglass_elapsed_ticks();
-    period_ticks = epd_hourglass_period_ticks();
-    progress = (uint16_t)(((uint32_t)elapsed * 1000u) / period_ticks);
-    phase = epd_hourglass_flip_phase(elapsed, period_ticks);
+    frame_index = epd_hourglass_asset_frame_index(&g_hourglass_sequence);
+    epd_draw_image_sequence(&g_hourglass_sequence, frame_index, x, y, g_hourglass_sequence.default_scale);
+    epd_draw_hourglass_caption((uint16_t)(x + 4), (uint16_t)(y + 68));
+}
 
-    epd_draw_hourglass_frame(cx, cy, phase);
-    if (phase == 0u) {
-        epd_draw_hourglass_sand(cx, cy, progress, frame);
-    } else {
-        epd_fill_rect_i((int16_t)(cx - 2u), (int16_t)(cy - 2u), 5u, 5u);
-        epd_fill_rect_i((int16_t)(cx - 10u + phase * 4u), (int16_t)(cy + 6u), 3u, 3u);
-        epd_fill_rect_i((int16_t)(cx + 6u - phase * 3u), (int16_t)(cy - 8u), 3u, 3u);
-    }
-    epd_draw_hourglass_caption(cx, cy);
+/* 在 SSD1673 帧缓冲中居中绘制 GIF 转换动画当前帧。 */
+static void epd_draw_gif_frame(void)
+{
+    epd_draw_image_sequence(&g_mascot_sequence,
+                            epd_image_next_loop_frame(&g_mascot_sequence, &g_mascot_frame_index),
+                            epd_image_center_coord(&g_mascot_sequence, EPD_SCREEN_W, 1),
+                            epd_image_center_coord(&g_mascot_sequence, EPD_SCREEN_H, 0),
+                            g_mascot_sequence.default_scale);
 }
 
 /* 使用 5x7 字库在 SSD1673 帧缓冲中绘制一个字符。 */
@@ -1050,156 +1031,51 @@ static void epd_alt_pixel(uint16_t x, uint16_t y, uint8_t black)
     }
 }
 
-/* 在备用驱动帧缓冲中绘制一个黑色矩形，允许坐标为负数裁剪。 */
-static void epd_alt_fill_rect_i(int16_t x, int16_t y, uint8_t w, uint8_t h)
+/* 将一帧 1bpp 图片资源贴到备用驱动帧缓冲，bit=1 的像素绘制为黑色。 */
+static void epd_alt_draw_image_frame(const ImageFrame *frame, int16_t x, int16_t y, uint8_t scale)
 {
-    uint8_t dx;
-    uint8_t dy;
-    int16_t px;
-    int16_t py;
+    uint16_t px;
+    uint16_t py;
+    uint8_t bit;
+    uint8_t sx;
+    uint8_t sy;
+    const uint8_t *row;
 
-    for (dy = 0; dy < h; dy++) {
-        py = (int16_t)(y + dy);
-        if (py < 0) {
-            continue;
-        }
-        for (dx = 0; dx < w; dx++) {
-            px = (int16_t)(x + dx);
-            if (px >= 0) {
-                epd_alt_pixel((uint16_t)px, (uint16_t)py, 1);
+    if (scale == 0) {
+        scale = 1;
+    }
+
+    for (py = 0; py < frame->height; py++) {
+        row = frame->data + (uint16_t)(py * frame->stride);
+        for (px = 0; px < frame->width; px++) {
+            bit = (uint8_t)(0x80u >> (px & 7u));
+            if ((row[px >> 3] & bit) == 0) {
+                continue;
+            }
+            for (sy = 0; sy < scale; sy++) {
+                for (sx = 0; sx < scale; sx++) {
+                    epd_alt_pixel((uint16_t)(x + (int16_t)(px * scale + sx)),
+                                  (uint16_t)(y + (int16_t)(py * scale + sy)), 1);
+                }
             }
         }
     }
 }
 
-/* 在备用驱动帧缓冲中绘制一条黑色直线。 */
-static void epd_alt_draw_line_i(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
+/* 从图片序列中选择一帧并贴到备用驱动帧缓冲。 */
+static void epd_alt_draw_image_sequence(const ImageSequence *seq, uint8_t index, int16_t x, int16_t y, uint8_t scale)
 {
-    int16_t dx;
-    int16_t dy;
-    int16_t sx;
-    int16_t sy;
-    int16_t err;
-    int16_t e2;
-
-    dx = (x0 < x1) ? (int16_t)(x1 - x0) : (int16_t)(x0 - x1);
-    dy = (y0 < y1) ? (int16_t)(y1 - y0) : (int16_t)(y0 - y1);
-    sx = (x0 < x1) ? 1 : -1;
-    sy = (y0 < y1) ? 1 : -1;
-    err = (int16_t)(dx - dy);
-
-    while (1) {
-        if (x0 >= 0 && y0 >= 0) {
-            epd_alt_pixel((uint16_t)x0, (uint16_t)y0, 1);
-        }
-        if (x0 == x1 && y0 == y1) {
-            break;
-        }
-        e2 = (int16_t)(err * 2);
-        if (e2 > (int16_t)(-dy)) {
-            err = (int16_t)(err - dy);
-            x0 = (int16_t)(x0 + sx);
-        }
-        if (e2 < dx) {
-            err = (int16_t)(err + dx);
-            y0 = (int16_t)(y0 + sy);
-        }
+    if (seq->frame_count == 0) {
+        return;
     }
+    if (index >= seq->frame_count) {
+        index = (uint8_t)(seq->frame_count - 1u);
+    }
+    epd_alt_draw_image_frame(&seq->frames[index], x, y, scale);
 }
 
-/* 在备用驱动帧缓冲中绘制沙漏外框，phase 为 0 时竖直，1-3 为翻转过程。 */
-static void epd_alt_draw_hourglass_frame(uint16_t cx, uint16_t cy, uint8_t phase)
-{
-    int16_t x;
-    int16_t y;
-
-    x = (int16_t)cx;
-    y = (int16_t)cy;
-    if (phase == 1u) {
-        epd_alt_draw_line_i((int16_t)(x - 17), (int16_t)(y - 20), (int16_t)(x + 9), (int16_t)(y - 27));
-        epd_alt_draw_line_i((int16_t)(x - 9), (int16_t)(y + 27), (int16_t)(x + 17), (int16_t)(y + 20));
-        epd_alt_draw_line_i((int16_t)(x - 17), (int16_t)(y - 20), x, y);
-        epd_alt_draw_line_i((int16_t)(x + 9), (int16_t)(y - 27), x, y);
-        epd_alt_draw_line_i(x, y, (int16_t)(x - 9), (int16_t)(y + 27));
-        epd_alt_draw_line_i(x, y, (int16_t)(x + 17), (int16_t)(y + 20));
-    } else if (phase == 2u) {
-        epd_alt_fill_rect_i((int16_t)(x - 27), (int16_t)(y - 13), 2u, 27u);
-        epd_alt_fill_rect_i((int16_t)(x + 26), (int16_t)(y - 13), 2u, 27u);
-        epd_alt_draw_line_i((int16_t)(x - 25), (int16_t)(y - 13), x, y);
-        epd_alt_draw_line_i((int16_t)(x - 25), (int16_t)(y + 13), x, y);
-        epd_alt_draw_line_i(x, y, (int16_t)(x + 26), (int16_t)(y - 13));
-        epd_alt_draw_line_i(x, y, (int16_t)(x + 26), (int16_t)(y + 13));
-    } else if (phase == 3u) {
-        epd_alt_draw_line_i((int16_t)(x - 9), (int16_t)(y - 27), (int16_t)(x + 17), (int16_t)(y - 20));
-        epd_alt_draw_line_i((int16_t)(x - 17), (int16_t)(y + 20), (int16_t)(x + 9), (int16_t)(y + 27));
-        epd_alt_draw_line_i((int16_t)(x - 9), (int16_t)(y - 27), x, y);
-        epd_alt_draw_line_i((int16_t)(x + 17), (int16_t)(y - 20), x, y);
-        epd_alt_draw_line_i(x, y, (int16_t)(x - 17), (int16_t)(y + 20));
-        epd_alt_draw_line_i(x, y, (int16_t)(x + 9), (int16_t)(y + 27));
-    } else {
-        epd_alt_fill_rect_i((int16_t)(x - 17), (int16_t)(y - 30), 35u, 2u);
-        epd_alt_fill_rect_i((int16_t)(x - 12), (int16_t)(y - 27), 25u, 1u);
-        epd_alt_fill_rect_i((int16_t)(x - 17), (int16_t)(y + 29), 35u, 2u);
-        epd_alt_fill_rect_i((int16_t)(x - 12), (int16_t)(y + 26), 25u, 1u);
-        epd_alt_draw_line_i((int16_t)(x - 13), (int16_t)(y - 25), (int16_t)(x - 2), (int16_t)(y - 1));
-        epd_alt_draw_line_i((int16_t)(x + 13), (int16_t)(y - 25), (int16_t)(x + 2), (int16_t)(y - 1));
-        epd_alt_draw_line_i((int16_t)(x - 2), (int16_t)(y + 1), (int16_t)(x - 13), (int16_t)(y + 25));
-        epd_alt_draw_line_i((int16_t)(x + 2), (int16_t)(y + 1), (int16_t)(x + 13), (int16_t)(y + 25));
-        epd_alt_fill_rect_i((int16_t)(x - 3), (int16_t)(y - 1), 7u, 2u);
-        epd_alt_pixel((uint16_t)(x - 8), (uint16_t)(y - 17), 1);
-        epd_alt_pixel((uint16_t)(x - 6), (uint16_t)(y - 11), 1);
-        epd_alt_pixel((uint16_t)(x + 7), (uint16_t)(y + 12), 1);
-        epd_alt_pixel((uint16_t)(x + 9), (uint16_t)(y + 18), 1);
-    }
-}
-
-/* 在备用驱动帧缓冲中按周期进度绘制沙漏内部流沙。 */
-static void epd_alt_draw_hourglass_sand(uint16_t cx, uint16_t cy, uint16_t progress, uint8_t frame)
-{
-    uint8_t row;
-    uint8_t width;
-    uint8_t top_rows;
-    uint8_t bottom_rows;
-    uint8_t remaining;
-    int16_t x;
-    int16_t y;
-
-    x = (int16_t)cx;
-    top_rows = (uint8_t)(((uint32_t)(1000u - progress) * 18u + 999u) / 1000u);
-    bottom_rows = (uint8_t)(((uint32_t)progress * 18u) / 1000u);
-
-    for (row = 0; row < top_rows; row++) {
-        y = (int16_t)((int16_t)cy - 4 - row);
-        width = (uint8_t)(2u + ((uint16_t)row * row + 18u) / 38u);
-        if (((row + frame) & 0x03u) == 0 && width > 3u) {
-            epd_alt_fill_rect_i((int16_t)(x - width + 1), y, (uint8_t)(width * 2u - 1u), 1u);
-        } else {
-            epd_alt_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
-        }
-    }
-
-    for (row = 0; row < bottom_rows; row++) {
-        y = (int16_t)((int16_t)cy + 23 - row);
-        remaining = (uint8_t)(bottom_rows - row);
-        width = (uint8_t)(2u + ((uint16_t)remaining * remaining) / 34u);
-        if (((row + frame) & 0x03u) == 2u && width > 4u) {
-            epd_alt_fill_rect_i((int16_t)(x - width + 1), y, (uint8_t)(width * 2u - 1u), 1u);
-        } else {
-            epd_alt_fill_rect_i((int16_t)(x - width), y, (uint8_t)(width * 2u + 1u), 1u);
-        }
-    }
-
-    if (progress > 25u && progress < 975u) {
-        epd_alt_fill_rect_i(x, (int16_t)((int16_t)cy - 1), 1u, 4u);
-        epd_alt_fill_rect_i(x, (int16_t)((int16_t)cy + 5 + (frame & 0x03u) * 3u), 1u, 2u);
-        epd_alt_fill_rect_i((int16_t)(x - 1), (int16_t)((int16_t)cy + 15 - (frame & 0x01u)), 3u, 1u);
-        epd_alt_pixel((uint16_t)(x - 4 + (frame & 0x03u)), (uint16_t)((int16_t)cy + 9), 1);
-        epd_alt_pixel((uint16_t)(x + 3 - (frame & 0x01u)), (uint16_t)((int16_t)cy + 18), 1);
-    }
-}
-
-/* 在备用驱动帧缓冲中绘制沙漏下方的周期和 TMP 平均温度文字。 */
-static void epd_alt_draw_hourglass_caption(uint16_t cx, uint16_t cy)
+/* 在备用驱动帧缓冲中绘制沙漏图片下方的周期和 TMP 平均温度文字。 */
+static void epd_alt_draw_hourglass_caption(uint16_t x, uint16_t y)
 {
     char line[16];
     char *p;
@@ -1207,36 +1083,34 @@ static void epd_alt_draw_hourglass_caption(uint16_t cx, uint16_t cy)
     p = line;
     p = append_u16(p, app_hourglass_seconds());
     (void)append_str(p, "s AVG");
-    epd_alt_draw_string((uint16_t)(cx - 20u), (uint16_t)(cy + 31u), line, 1);
+    epd_alt_draw_string(x, y, line, 1);
 
     p = line;
     p = append_t10(p, g_tmp_avg_display_t10);
     (void)append_str(p, "C");
-    epd_alt_draw_string((uint16_t)(cx - 15u), (uint16_t)(cy + 41u), line, 1);
+    epd_alt_draw_string((uint16_t)(x + 5u), (uint16_t)(y + 10u), line, 1);
 }
 
-/* 在备用驱动主界面右侧绘制沙漏动画和 TMP 周期平均温度。 */
-static void epd_alt_draw_hourglass(uint16_t cx, uint16_t cy, uint8_t frame)
+/* 在备用驱动主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
+static void epd_alt_draw_hourglass(int16_t x, int16_t y)
 {
-    uint16_t elapsed;
-    uint16_t period_ticks;
-    uint16_t progress;
-    uint8_t phase;
+    uint8_t frame_index;
 
-    elapsed = epd_hourglass_elapsed_ticks();
-    period_ticks = epd_hourglass_period_ticks();
-    progress = (uint16_t)(((uint32_t)elapsed * 1000u) / period_ticks);
-    phase = epd_hourglass_flip_phase(elapsed, period_ticks);
+    frame_index = epd_hourglass_asset_frame_index(&g_hourglass_sequence);
+    epd_alt_draw_image_sequence(&g_hourglass_sequence, frame_index, x, y, g_hourglass_sequence.default_scale);
+    epd_alt_draw_hourglass_caption((uint16_t)(x + 4), (uint16_t)(y + 68));
+}
 
-    epd_alt_draw_hourglass_frame(cx, cy, phase);
-    if (phase == 0u) {
-        epd_alt_draw_hourglass_sand(cx, cy, progress, frame);
-    } else {
-        epd_alt_fill_rect_i((int16_t)(cx - 2u), (int16_t)(cy - 2u), 5u, 5u);
-        epd_alt_fill_rect_i((int16_t)(cx - 10u + phase * 4u), (int16_t)(cy + 6u), 3u, 3u);
-        epd_alt_fill_rect_i((int16_t)(cx + 6u - phase * 3u), (int16_t)(cy - 8u), 3u, 3u);
-    }
-    epd_alt_draw_hourglass_caption(cx, cy);
+/* 使用备用驱动渲染全屏 GIF 动画当前帧。 */
+static void epd_alt_show_gif(void)
+{
+    epd_alt_clear_buffer();
+    epd_alt_draw_image_sequence(&g_mascot_sequence,
+                                epd_image_next_loop_frame(&g_mascot_sequence, &g_mascot_frame_index),
+                                epd_image_center_coord(&g_mascot_sequence, EPD_ALT_SCREEN_W, 1),
+                                epd_image_center_coord(&g_mascot_sequence, EPD_ALT_SCREEN_H, 0),
+                                g_mascot_sequence.default_scale);
+    (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
 /* 使用 5x7 字库在备用驱动帧缓冲中绘制一个字符。 */
@@ -1385,16 +1259,14 @@ static void epd_alt_show_current(const TempSample *s)
 {
     char lines[4][24];
     uint8_t i;
-    uint8_t frame;
 
-    frame = epd_next_anim_frame();
     sample_to_lines(s, lines);
     epd_alt_clear_buffer();
     epd_alt_draw_string(0, 0, "TEMP LOGGER", 2);
     for (i = 0; i < 4u; i++) {
         epd_alt_draw_string(0, (uint16_t)(22u + i * 18u), lines[i], 2);
     }
-    epd_alt_draw_hourglass(148u, 54u, frame);
+    epd_alt_draw_hourglass(120, 4);
     if (sample_over_threshold(s)) {
         epd_alt_draw_string(92, 124, "ALM 1", 2);
     } else {
@@ -1408,30 +1280,35 @@ static void epd_show_current(const TempSample *s)
 {
     char lines[4][24];
     uint8_t i;
-    uint8_t frame;
 
-    frame = epd_next_anim_frame();
     sample_to_lines(s, lines);
     epd_clear_buffer();
     epd_draw_string(0, 0, "TEMP LOGGER", 2);
     for (i = 0; i < 4u; i++) {
         epd_draw_string(0, (uint16_t)(22u + i * 18u), lines[i], 2);
     }
-    epd_draw_hourglass(222u, 46u, frame);
     if (sample_over_threshold(s)) {
         epd_draw_string(154, 104, "ALM 1", 2);
     } else {
         epd_draw_string(154, 104, "ALM 0", 2);
     }
+    epd_draw_hourglass(g_hourglass_sequence.default_x, g_hourglass_sequence.default_y);
+    epd_flush_partial();
+}
+
+/* 使用 SSD1673 渲染全屏 GIF 动画当前帧。 */
+static void epd_show_gif(void)
+{
+    epd_clear_buffer();
+    epd_draw_gif_frame();
     epd_flush_partial();
 }
 
 void epd_force_next_current_refresh(void)
 {
     g_epd_history_playback = 0;
-    if (g_epd_has_target_sample) {
-        g_epd_render_view = EPD_VIEW_CURRENT;
-    }
+    g_epd_gif_playback = 0;
+    g_epd_render_view = EPD_VIEW_CURRENT;
     epd_request_render(1);
 }
 
@@ -1444,6 +1321,7 @@ void epd_show_current_auto(const TempSample *s)
     g_epd_target_sample = *s;
     g_epd_has_target_sample = 1;
     g_epd_render_view = EPD_VIEW_CURRENT;
+    g_epd_gif_playback = 0;
     epd_hourglass_add_sample(s);
     epd_request_render(1);
 }
@@ -1575,6 +1453,7 @@ void epd_show_history_page(uint16_t start)
     g_epd_target_history_start = start;
     g_epd_auto_update = 0;
     g_epd_history_playback = 0;
+    g_epd_gif_playback = 0;
     g_epd_render_view = EPD_VIEW_HISTORY;
     epd_request_render(1);
 }
@@ -1587,8 +1466,20 @@ void epd_show_history_playback(void)
     g_epd_target_history_start = epd_history_latest_start(count);
     g_epd_auto_update = 0;
     g_epd_history_playback = 1;
+    g_epd_gif_playback = 0;
     g_epd_render_view = EPD_VIEW_HISTORY;
     g_epd_last_history_scroll_tick = board_tick10();
+    epd_request_render(1);
+}
+
+void epd_show_gif_playback(void)
+{
+    g_epd_auto_update = 0;
+    g_epd_history_playback = 0;
+    g_epd_gif_playback = 1;
+    g_epd_render_view = EPD_VIEW_GIF;
+    g_mascot_frame_index = 0;
+    g_epd_last_gif_frame_tick = board_tick10();
     epd_request_render(1);
 }
 
@@ -1601,6 +1492,7 @@ void epd_show_settings_page(uint8_t selected, uint8_t editing)
     g_epd_settings_editing = editing ? 1u : 0u;
     g_epd_auto_update = 0;
     g_epd_history_playback = 0;
+    g_epd_gif_playback = 0;
     g_epd_render_view = EPD_VIEW_SETTINGS;
     epd_request_render(1);
 }
@@ -1608,7 +1500,9 @@ void epd_show_settings_page(uint8_t selected, uint8_t editing)
 void epd_render_task(void)
 {
     if (!g_epd_render_dirty) {
-        if (epd_history_frame_due()) {
+        if (epd_gif_frame_due()) {
+            g_epd_render_dirty = 1;
+        } else if (epd_history_frame_due()) {
             g_epd_render_dirty = 1;
         } else if (epd_auto_frame_due()) {
             g_epd_render_dirty = 1;
@@ -1619,7 +1513,14 @@ void epd_render_task(void)
 
     g_epd_render_dirty = 0;
 
-    if (g_epd_render_view == EPD_VIEW_HISTORY) {
+    if (g_epd_render_view == EPD_VIEW_GIF) {
+        if (g_epd_driver == EPD_DRIVER_SPD2701) {
+            epd_alt_show_gif();
+        } else {
+            epd_show_gif();
+        }
+        g_epd_last_gif_frame_tick = board_tick10();
+    } else if (g_epd_render_view == EPD_VIEW_HISTORY) {
         if (g_epd_driver == EPD_DRIVER_SPD2701) {
             epd_alt_show_history(g_epd_target_history_start);
         } else {
@@ -1657,6 +1558,7 @@ void epd_resume_auto(void)
 {
     g_epd_auto_update = 1;
     g_epd_history_playback = 0;
+    g_epd_gif_playback = 0;
     epd_force_next_current_refresh();
 }
 
@@ -1671,6 +1573,7 @@ void epd_use_alt_auto(void)
     g_epd_driver = EPD_DRIVER_SPD2701;
     g_epd_auto_update = 1;
     g_epd_history_playback = 0;
+    g_epd_gif_playback = 0;
     epd_alt_init();
     epd_force_next_current_refresh();
 }

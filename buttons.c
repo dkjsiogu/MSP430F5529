@@ -13,6 +13,7 @@
 #define BUTTON_MODE_SETTINGS_SELECT 1u   /* 设置界面参数选择模式。 */
 #define BUTTON_MODE_SETTINGS_EDIT   2u   /* 设置界面参数编辑模式。 */
 #define BUTTON_MODE_HISTORY         3u   /* 历史记录播放界面按键模式。 */
+#define BUTTON_MODE_GIF             4u   /* 全屏 GIF 动画播放界面按键模式。 */
 
 #define SETTINGS_ITEM_SAMPLE        0u   /* 设置项：定时采样间隔。 */
 #define SETTINGS_ITEM_ALARM_TEMP    1u   /* 设置项：报警温度阈值。 */
@@ -188,6 +189,13 @@ static void buttons_enter_history(void)
     epd_show_history_playback();
 }
 
+/* 从主界面进入全屏 GIF 动画播放页面。 */
+static void buttons_enter_gif(void)
+{
+    g_button_mode = BUTTON_MODE_GIF;
+    epd_show_gif_playback();
+}
+
 /* 退出设置或历史页面，保存设置并恢复主温度界面自动刷新。 */
 static void buttons_return_main(void)
 {
@@ -261,7 +269,12 @@ static void buttons_confirm_setting(void)
 
 void buttons_action_s1(const TempSample *last_sample, uint8_t has_sample)
 {
-    if (g_button_mode == BUTTON_MODE_HISTORY) {
+    if (g_button_mode == BUTTON_MODE_MAIN) {
+        (void)last_sample;
+        (void)has_sample;
+        buttons_enter_gif();
+    } else if (g_button_mode == BUTTON_MODE_HISTORY ||
+               g_button_mode == BUTTON_MODE_GIF) {
         buttons_return_main();
     } else if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {
         buttons_move_setting(-1);

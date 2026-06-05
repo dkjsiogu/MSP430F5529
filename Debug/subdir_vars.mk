@@ -15,6 +15,7 @@ C_SRCS += \
 ../epaper.c \
 ../flash_log.c \
 ../format.c \
+../image_frames.c \
 ../main.c \
 ../sensors.c \
 ../serial_control.c \
@@ -27,6 +28,7 @@ C_DEPS += \
 ./epaper.d \
 ./flash_log.d \
 ./format.d \
+./image_frames.d \
 ./main.d \
 ./sensors.d \
 ./serial_control.d \
@@ -39,6 +41,7 @@ OBJS += \
 ./epaper.obj \
 ./flash_log.obj \
 ./format.obj \
+./image_frames.obj \
 ./main.obj \
 ./sensors.obj \
 ./serial_control.obj \
@@ -51,6 +54,7 @@ OBJS__QUOTED += \
 "epaper.obj" \
 "flash_log.obj" \
 "format.obj" \
+"image_frames.obj" \
 "main.obj" \
 "sensors.obj" \
 "serial_control.obj" \
@@ -63,6 +67,7 @@ C_DEPS__QUOTED += \
 "epaper.d" \
 "flash_log.d" \
 "format.d" \
+"image_frames.d" \
 "main.d" \
 "sensors.d" \
 "serial_control.d" \
@@ -75,6 +80,7 @@ C_SRCS__QUOTED += \
 "../epaper.c" \
 "../flash_log.c" \
 "../format.c" \
+"../image_frames.c" \
 "../main.c" \
 "../sensors.c" \
 "../serial_control.c" \

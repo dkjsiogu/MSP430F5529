@@ -16,6 +16,7 @@ ORDERED_OBJS += \
 "./epaper.obj" \
 "./flash_log.obj" \
 "./format.obj" \
+"./image_frames.obj" \
 "./main.obj" \
 "./sensors.obj" \
 "./serial_control.obj" \
@@ -144,8 +145,8 @@ all: $(OBJS) $(CMD_SRCS) $(GEN_CMDS)
 # Other Targets
 clean:
 	-$(RM) $(EXE_OUTPUTS__QUOTED)
-	-$(RM) "app_state.obj" "board.obj" "buttons.obj" "epaper.obj" "flash_log.obj" "format.obj" "main.obj" "sensors.obj" "serial_control.obj" "uart.obj" 
-	-$(RM) "app_state.d" "board.d" "buttons.d" "epaper.d" "flash_log.d" "format.d" "main.d" "sensors.d" "serial_control.d" "uart.d" 
+	-$(RM) "app_state.obj" "board.obj" "buttons.obj" "epaper.obj" "flash_log.obj" "format.obj" "image_frames.obj" "main.obj" "sensors.obj" "serial_control.obj" "uart.obj"
+	-$(RM) "app_state.d" "board.d" "buttons.d" "epaper.d" "flash_log.d" "format.d" "image_frames.d" "main.d" "sensors.d" "serial_control.d" "uart.d"
 	-@echo ' '
 
 .PHONY: all clean dependents

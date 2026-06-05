@@ -4,6 +4,7 @@
 "./epaper.obj"
 "./flash_log.obj"
 "./format.obj"
+"./image_frames.obj"
 "./main.obj"
 "./sensors.obj"
 "./serial_control.obj"
