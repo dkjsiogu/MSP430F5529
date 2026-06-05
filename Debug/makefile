@@ -10,6 +10,7 @@ GEN_OPTS__FLAG :=
 GEN_CMDS__FLAG := 
 
 ORDERED_OBJS += \
+"./app_resources.obj" \
 "./app_state.obj" \
 "./board.obj" \
 "./buttons.obj" \
@@ -20,6 +21,7 @@ ORDERED_OBJS += \
 "./sd_assets.obj" \
 "./sensors.obj" \
 "./serial_control.obj" \
+"./text_reader.obj" \
 "./uart.obj" \
 "./fatfs/HAL_SDCard.obj" \
 "./fatfs/ff.obj" \
@@ -150,8 +152,8 @@ all: $(OBJS) $(CMD_SRCS) $(GEN_CMDS)
 # Other Targets
 clean:
 	-$(RM) $(EXE_OUTPUTS__QUOTED)
-	-$(RM) "app_state.obj" "board.obj" "buttons.obj" "epaper.obj" "flash_log.obj" "format.obj" "main.obj" "sd_assets.obj" "sensors.obj" "serial_control.obj" "uart.obj" "fatfs\HAL_SDCard.obj" "fatfs\ff.obj" "fatfs\mmc.obj" 
-	-$(RM) "app_state.d" "board.d" "buttons.d" "epaper.d" "flash_log.d" "format.d" "main.d" "sd_assets.d" "sensors.d" "serial_control.d" "uart.d" "fatfs\HAL_SDCard.d" "fatfs\ff.d" "fatfs\mmc.d" 
+	-$(RM) "app_resources.obj" "app_state.obj" "board.obj" "buttons.obj" "epaper.obj" "flash_log.obj" "format.obj" "main.obj" "sd_assets.obj" "sensors.obj" "serial_control.obj" "text_reader.obj" "uart.obj" "fatfs\HAL_SDCard.obj" "fatfs\ff.obj" "fatfs\mmc.obj"
+	-$(RM) "app_resources.d" "app_state.d" "board.d" "buttons.d" "epaper.d" "flash_log.d" "format.d" "main.d" "sd_assets.d" "sensors.d" "serial_control.d" "text_reader.d" "uart.d" "fatfs\HAL_SDCard.d" "fatfs\ff.d" "fatfs\mmc.d"
 	-@echo ' '
 
 .PHONY: all clean dependents

@@ -3,7 +3,8 @@
 #include "board.h"
 #include "flash_log.h"
 #include "format.h"
-#include "sd_assets.h"
+#include "app_resources.h"
+#include "text_reader.h"
 static const uint8_t font5x7[96][5] = {
     {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00},
     {0x00,0x07,0x00,0x07,0x00}, {0x14,0x7F,0x14,0x7F,0x14},
@@ -87,32 +88,20 @@ static const uint8_t epd_alt_lut[90] = {
 #define EPD_VIEW_HISTORY            1u /* Flash 历史记录界面渲染目标。 */
 #define EPD_VIEW_SETTINGS           2u /* 设置界面渲染目标。 */
 #define EPD_VIEW_GIF                3u /* 全屏 GIF 动画播放界面渲染目标。 */
-#define EPD_VIEW_TEXT               4u /* SD 卡文本阅读界面渲染目标。 */
+#define EPD_VIEW_TEXT               4u /* 文本阅读界面渲染目标。 */
 #define EPD_SETTINGS_ROWS           5u /* 设置页面显示的配置项数量。 */
-#define EPD_HOURGLASS_X             198 /* SSD1673 主界面沙漏默认 X 坐标，SD 索引缺失时使用。 */
-#define EPD_HOURGLASS_Y             12  /* SSD1673 主界面沙漏默认 Y 坐标，SD 索引缺失时使用。 */
+#define EPD_HOURGLASS_X             198 /* SSD1673 主界面沙漏默认 X 坐标，资源索引缺失时使用。 */
+#define EPD_HOURGLASS_Y             12  /* SSD1673 主界面沙漏默认 Y 坐标，资源索引缺失时使用。 */
 #define EPD_ALT_HOURGLASS_X         120 /* 备用驱动主界面沙漏 X 坐标。 */
 #define EPD_ALT_HOURGLASS_Y         4   /* 备用驱动主界面沙漏 Y 坐标。 */
 #define EPD_ZHENG_X                 170 /* SSD1673 主界面“郑”字绘制 X 坐标，位于沙漏左侧。 */
 #define EPD_ZHENG_Y                 38  /* SSD1673 主界面“郑”字绘制 Y 坐标。 */
 #define EPD_ALT_ZHENG_X             94  /* 备用驱动主界面“郑”字绘制 X 坐标。 */
 #define EPD_ALT_ZHENG_Y             96  /* 备用驱动主界面“郑”字绘制 Y 坐标。 */
-#define EPD_TEXT_MARGIN_X           2u  /* 阅读页左侧留白，单位像素。 */
 #define EPD_TEXT_TOP_Y              14u /* SSD1673 阅读页正文起始 Y 坐标。 */
 #define EPD_TEXT_ALT_TOP_Y          12u /* 备用驱动阅读页正文起始 Y 坐标。 */
-#define EPD_TEXT_LINE_HEIGHT        18u /* 阅读页正文行高，匹配 16x16 点阵字库。 */
 #define EPD_TEXT_LINES              6u  /* SSD1673 阅读页正文行数。 */
 #define EPD_TEXT_ALT_LINES          7u  /* 备用驱动阅读页正文行数。 */
-#define EPD_TEXT_CELL_W             16u /* 阅读页中文点阵字形默认占位宽度。 */
-#define EPD_TEXT_ASCII_W            6u  /* 阅读页 ASCII 字符默认占位宽度。 */
-#define EPD_TEXT_MAX_ITEMS          128u /* 单页最多缓存的字符位置数量。 */
-#define EPD_TEXT_HISTORY_DEPTH      16u /* 阅读页向前翻页保存的页起点数量。 */
-
-typedef struct {
-    uint16_t codepoint;      /* UTF-8 解码后的 Unicode BMP 码点。 */
-    uint8_t x;               /* 字符左上角 X 坐标。 */
-    uint8_t y;               /* 字符左上角 Y 坐标。 */
-} EpdTextItem;
 
 static uint8_t g_epd_auto_update = 1;
 static uint8_t g_epd_driver = EPD_DRIVER_SSD1673;
@@ -129,20 +118,13 @@ static uint16_t g_epd_last_history_scroll_tick = 0;
 static uint16_t g_epd_last_gif_frame_tick = 0;
 static TempSample g_epd_target_sample;
 static uint8_t epd_buf[EPD_BUF_SIZE];
-static uint8_t g_sd_row_buf[SD_ASSET_ROW_MAX_BYTES];
+static uint8_t g_resource_row_buf[APP_RESOURCE_ROW_MAX_BYTES];
 static uint8_t g_mascot_frame_index = 0;
-static uint8_t g_gif_image_id = SD_ASSET_IMAGE_MASCOT;
+static uint8_t g_gif_image_id = APP_RESOURCE_IMAGE_MASCOT;
 static uint16_t g_hourglass_cycle_start_tick = 0;
 static int32_t g_tmp_avg_sum_t10 = 0;
 static uint8_t g_tmp_avg_count = 0;
 static int16_t g_tmp_avg_display_t10 = INVALID_T10;
-static EpdTextItem g_text_items[EPD_TEXT_MAX_ITEMS];
-static uint8_t g_text_item_count = 0;
-static uint32_t g_text_page_offset = 0;
-static uint32_t g_text_next_offset = 0;
-static uint32_t g_text_file_size = 0;
-static uint32_t g_text_prev_offsets[EPD_TEXT_HISTORY_DEPTH];
-static uint8_t g_text_prev_count = 0;
 
 /* 前置声明 SSD1673 字符串绘制函数，供沙漏字幕提前调用。 */
 static void epd_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale);
@@ -736,7 +718,7 @@ void epd_init(void)
     g_epd_last_gif_frame_tick = board_tick10();
     g_hourglass_cycle_start_tick = board_tick10();
     g_mascot_frame_index = 0;
-    g_gif_image_id = SD_ASSET_IMAGE_MASCOT;
+    g_gif_image_id = APP_RESOURCE_IMAGE_MASCOT;
     g_tmp_avg_sum_t10 = 0;
     g_tmp_avg_count = 0;
     g_tmp_avg_display_t10 = INVALID_T10;
@@ -892,8 +874,8 @@ static void epd_draw_1bpp_row(uint16_t width, const uint8_t *row, uint16_t py,
     }
 }
 
-/* 从当前 SD 图片资源按行读取并贴到 SSD1673 帧缓冲。 */
-static uint8_t epd_draw_sd_image_rows(const SdImageInfo *info, int16_t x, int16_t y)
+/* 从当前图片资源按行读取并贴到 SSD1673 帧缓冲。 */
+static uint8_t epd_draw_image_rows(const AppImageInfo *info, int16_t x, int16_t y)
 {
     uint16_t py;
     uint8_t scale;
@@ -904,10 +886,10 @@ static uint8_t epd_draw_sd_image_rows(const SdImageInfo *info, int16_t x, int16_
     }
 
     for (py = 0; py < info->height; py++) {
-        if (!sd_assets_read_image_row(g_sd_row_buf, info->stride)) {
+        if (!app_resources_read_image_row(g_resource_row_buf, info->stride)) {
             return 0;
         }
-        epd_draw_1bpp_row(info->width, g_sd_row_buf, py, x, y, scale);
+        epd_draw_1bpp_row(info->width, g_resource_row_buf, py, x, y, scale);
     }
     return 1;
 }
@@ -945,20 +927,20 @@ static int16_t epd_center_coord(uint16_t image_size, uint16_t screen_size, uint8
     return (int16_t)((screen_size - image_size) / 2u);
 }
 
-/* 在 SSD1673 帧缓冲中绘制 SD 字库里的“郑”字点阵。 */
+/* 在 SSD1673 帧缓冲中绘制资源字库里的“郑”字点阵。 */
 static void epd_draw_zheng_glyph(int16_t x, int16_t y)
 {
-    SdGlyphInfo info;
+    AppGlyphInfo info;
     uint16_t py;
 
-    if (!sd_assets_begin_glyph(SD_ASSET_GLYPH_ZHENG, &info)) {
+    if (!app_resources_begin_zheng_glyph(&info)) {
         return;
     }
     for (py = 0; py < info.height; py++) {
-        if (!sd_assets_read_glyph_row(g_sd_row_buf, info.stride)) {
+        if (!app_resources_read_glyph_row(g_resource_row_buf, info.stride)) {
             return;
         }
-        epd_draw_1bpp_row(info.width, g_sd_row_buf, py, x, y, 1);
+        epd_draw_1bpp_row(info.width, g_resource_row_buf, py, x, y, 1);
     }
 }
 
@@ -982,21 +964,21 @@ static void epd_draw_hourglass_caption(uint16_t x, uint16_t y)
 /* 在 SSD1673 主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
 static void epd_draw_hourglass(void)
 {
-    SdImageInfo info;
+    AppImageInfo info;
     int16_t x;
     int16_t y;
     uint8_t frame_index;
 
     x = EPD_HOURGLASS_X;
     y = EPD_HOURGLASS_Y;
-    if (!sd_assets_get_image_info(SD_ASSET_IMAGE_HOURGLASS, &info)) {
+    if (!app_resources_get_image_info(APP_RESOURCE_IMAGE_HOURGLASS, &info)) {
         return;
     }
     x = info.default_x;
     y = info.default_y;
     frame_index = epd_hourglass_asset_frame_index(info.frame_count);
-    if (sd_assets_begin_image_frame(SD_ASSET_IMAGE_HOURGLASS, frame_index)) {
-        (void)epd_draw_sd_image_rows(&info, x, y);
+    if (app_resources_begin_image_frame(APP_RESOURCE_IMAGE_HOURGLASS, frame_index)) {
+        (void)epd_draw_image_rows(&info, x, y);
     }
     epd_draw_hourglass_caption((uint16_t)(x + 4), (uint16_t)(y + 68));
 }
@@ -1008,7 +990,7 @@ static void epd_draw_gif_source_tag(const char *label)
     epd_draw_string(2, 2, label, 1);
 }
 
-/* SD 卡 GIF 资源不可用时显示明确状态，避免误以为还在播放内置资源。 */
+/* GIF 资源不可用时显示明确状态，避免误以为还在正常播放。 */
 static void epd_draw_gif_missing(void)
 {
     epd_draw_gif_source_tag("NO SD");
@@ -1016,8 +998,8 @@ static void epd_draw_gif_missing(void)
     epd_draw_string(72, 72, "MASCOT.BIN", 1);
 }
 
-/* 从 SD 卡按行读取 GIF 帧并贴到 SSD1673 帧缓冲，避免占用整帧 RAM 缓存。 */
-static uint8_t epd_draw_sd_mascot_frame(const SdImageInfo *info)
+/* 按行读取 GIF 资源帧并贴到 SSD1673 帧缓冲，避免占用整帧 RAM 缓存。 */
+static uint8_t epd_draw_gif_resource_frame(const AppImageInfo *info)
 {
     int16_t x;
     int16_t y;
@@ -1030,7 +1012,7 @@ static uint8_t epd_draw_sd_mascot_frame(const SdImageInfo *info)
     x = epd_center_coord(info->width, EPD_SCREEN_W, scale);
     y = epd_center_coord(info->height, EPD_SCREEN_H, scale);
 
-    if (!epd_draw_sd_image_rows(info, x, y)) {
+    if (!epd_draw_image_rows(info, x, y)) {
         return 0;
     }
     epd_draw_gif_source_tag("SD");
@@ -1040,13 +1022,13 @@ static uint8_t epd_draw_sd_mascot_frame(const SdImageInfo *info)
 /* 在 SSD1673 帧缓冲中居中绘制 GIF 转换动画当前帧。 */
 static void epd_draw_gif_frame(void)
 {
-    SdImageInfo info;
+    AppImageInfo info;
     uint8_t index;
 
-    if (sd_assets_get_image_info(g_gif_image_id, &info)) {
+    if (app_resources_get_image_info(g_gif_image_id, &info)) {
         index = epd_next_frame_index(info.frame_count, &g_mascot_frame_index);
-        if (sd_assets_begin_image_frame(g_gif_image_id, index) &&
-            epd_draw_sd_mascot_frame(&info)) {
+        if (app_resources_begin_image_frame(g_gif_image_id, index) &&
+            epd_draw_gif_resource_frame(&info)) {
             return;
         }
     }
@@ -1191,17 +1173,17 @@ static void epd_alt_draw_1bpp_row(uint16_t width, const uint8_t *row, uint16_t p
 /* 在备用驱动帧缓冲中绘制 24x24 的“郑”字点阵。 */
 static void epd_alt_draw_zheng_glyph(int16_t x, int16_t y)
 {
-    SdGlyphInfo info;
+    AppGlyphInfo info;
     uint16_t py;
 
-    if (!sd_assets_begin_glyph(SD_ASSET_GLYPH_ZHENG, &info)) {
+    if (!app_resources_begin_zheng_glyph(&info)) {
         return;
     }
     for (py = 0; py < info.height; py++) {
-        if (!sd_assets_read_glyph_row(g_sd_row_buf, info.stride)) {
+        if (!app_resources_read_glyph_row(g_resource_row_buf, info.stride)) {
             return;
         }
-        epd_alt_draw_1bpp_row(info.width, g_sd_row_buf, py, x, y, 1);
+        epd_alt_draw_1bpp_row(info.width, g_resource_row_buf, py, x, y, 1);
     }
 }
 
@@ -1222,8 +1204,8 @@ static void epd_alt_draw_hourglass_caption(uint16_t x, uint16_t y)
     epd_alt_draw_string((uint16_t)(x + 5u), (uint16_t)(y + 10u), line, 1);
 }
 
-/* 在备用驱动主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
-static uint8_t epd_alt_draw_sd_image_rows(const SdImageInfo *info, int16_t x, int16_t y)
+/* 从当前图片资源按行读取并贴到备用驱动帧缓冲。 */
+static uint8_t epd_alt_draw_image_rows(const AppImageInfo *info, int16_t x, int16_t y)
 {
     uint16_t py;
     uint8_t scale;
@@ -1234,10 +1216,10 @@ static uint8_t epd_alt_draw_sd_image_rows(const SdImageInfo *info, int16_t x, in
     }
 
     for (py = 0; py < info->height; py++) {
-        if (!sd_assets_read_image_row(g_sd_row_buf, info->stride)) {
+        if (!app_resources_read_image_row(g_resource_row_buf, info->stride)) {
             return 0;
         }
-        epd_alt_draw_1bpp_row(info->width, g_sd_row_buf, py, x, y, scale);
+        epd_alt_draw_1bpp_row(info->width, g_resource_row_buf, py, x, y, scale);
     }
     return 1;
 }
@@ -1245,19 +1227,19 @@ static uint8_t epd_alt_draw_sd_image_rows(const SdImageInfo *info, int16_t x, in
 /* 在备用驱动主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
 static void epd_alt_draw_hourglass(void)
 {
-    SdImageInfo info;
+    AppImageInfo info;
     int16_t x;
     int16_t y;
     uint8_t frame_index;
 
     x = EPD_ALT_HOURGLASS_X;
     y = EPD_ALT_HOURGLASS_Y;
-    if (!sd_assets_get_image_info(SD_ASSET_IMAGE_HOURGLASS, &info)) {
+    if (!app_resources_get_image_info(APP_RESOURCE_IMAGE_HOURGLASS, &info)) {
         return;
     }
     frame_index = epd_hourglass_asset_frame_index(info.frame_count);
-    if (sd_assets_begin_image_frame(SD_ASSET_IMAGE_HOURGLASS, frame_index)) {
-        (void)epd_alt_draw_sd_image_rows(&info, x, y);
+    if (app_resources_begin_image_frame(APP_RESOURCE_IMAGE_HOURGLASS, frame_index)) {
+        (void)epd_alt_draw_image_rows(&info, x, y);
     }
     epd_alt_draw_hourglass_caption((uint16_t)(x + 4), (uint16_t)(y + 68));
 }
@@ -1269,7 +1251,7 @@ static void epd_alt_draw_gif_source_tag(const char *label)
     epd_alt_draw_string(2, 2, label, 1);
 }
 
-/* 备用驱动下的 SD GIF 资源缺失提示。 */
+/* 备用驱动下的 GIF 资源缺失提示。 */
 static void epd_alt_draw_gif_missing(void)
 {
     epd_alt_draw_gif_source_tag("NO SD");
@@ -1277,8 +1259,8 @@ static void epd_alt_draw_gif_missing(void)
     epd_alt_draw_string(36, 80, "MASCOT.BIN", 1);
 }
 
-/* 从 SD 卡按行读取 GIF 帧并贴到备用驱动帧缓冲。 */
-static uint8_t epd_alt_draw_sd_mascot_frame(const SdImageInfo *info)
+/* 按行读取 GIF 资源帧并贴到备用驱动帧缓冲。 */
+static uint8_t epd_alt_draw_gif_resource_frame(const AppImageInfo *info)
 {
     int16_t x;
     int16_t y;
@@ -1291,7 +1273,7 @@ static uint8_t epd_alt_draw_sd_mascot_frame(const SdImageInfo *info)
     x = epd_center_coord(info->width, EPD_ALT_SCREEN_W, scale);
     y = epd_center_coord(info->height, EPD_ALT_SCREEN_H, scale);
 
-    if (!epd_alt_draw_sd_image_rows(info, x, y)) {
+    if (!epd_alt_draw_image_rows(info, x, y)) {
         return 0;
     }
     epd_alt_draw_gif_source_tag("SD");
@@ -1301,14 +1283,14 @@ static uint8_t epd_alt_draw_sd_mascot_frame(const SdImageInfo *info)
 /* 使用备用驱动渲染全屏 GIF 动画当前帧。 */
 static void epd_alt_show_gif(void)
 {
-    SdImageInfo info;
+    AppImageInfo info;
     uint8_t index;
 
     epd_alt_clear_buffer();
-    if (sd_assets_get_image_info(g_gif_image_id, &info)) {
+    if (app_resources_get_image_info(g_gif_image_id, &info)) {
         index = epd_next_frame_index(info.frame_count, &g_mascot_frame_index);
-        if (sd_assets_begin_image_frame(g_gif_image_id, index) &&
-            epd_alt_draw_sd_mascot_frame(&info)) {
+        if (app_resources_begin_image_frame(g_gif_image_id, index) &&
+            epd_alt_draw_gif_resource_frame(&info)) {
             (void)epd_alt_write_buffer_to_screen(epd_buf);
             return;
         }
@@ -1363,259 +1345,91 @@ static void epd_alt_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t s
     }
 }
 
-/* 从 BOOK.TXT 当前文件位置读取一个字节，并同步维护解析偏移。 */
-static uint8_t epd_text_read_byte(uint32_t *offset, uint8_t *value)
-{
-    if (!sd_assets_read_text_byte(value)) {
-        return 0;
-    }
-    *offset = (uint32_t)(*offset + 1u);
-    return 1;
-}
-
-/* 从 UTF-8 文本流中解码一个 BMP 码点，返回值 0 表示到达文件尾。 */
-static uint8_t epd_text_decode_next(uint32_t *offset, uint16_t *codepoint, uint8_t *skip_lf)
-{
-    uint8_t b0;
-    uint8_t b1;
-    uint8_t b2;
-    uint32_t start;
-
-    while (epd_text_read_byte(offset, &b0)) {
-        start = (uint32_t)(*offset - 1u);
-        if (start == 0 && b0 == 0xEFu) {
-            if (epd_text_read_byte(offset, &b1) &&
-                epd_text_read_byte(offset, &b2) &&
-                b1 == 0xBBu && b2 == 0xBFu) {
-                continue;
-            }
-            *codepoint = '?';
-            return 1;
-        }
-
-        if (*skip_lf && b0 == '\n') {
-            *skip_lf = 0;
-            continue;
-        }
-        *skip_lf = 0;
-
-        if (b0 == '\r') {
-            *skip_lf = 1;
-            *codepoint = '\n';
-            return 1;
-        }
-        if (b0 == '\n') {
-            *codepoint = '\n';
-            return 1;
-        }
-        if (b0 < 0x80u) {
-            *codepoint = b0;
-            return 1;
-        }
-        if ((b0 & 0xE0u) == 0xC0u) {
-            if (!epd_text_read_byte(offset, &b1)) {
-                *codepoint = '?';
-                return 1;
-            }
-            *codepoint = (uint16_t)(((uint16_t)(b0 & 0x1Fu) << 6) |
-                                    (uint16_t)(b1 & 0x3Fu));
-            return 1;
-        }
-        if ((b0 & 0xF0u) == 0xE0u) {
-            if (!epd_text_read_byte(offset, &b1) ||
-                !epd_text_read_byte(offset, &b2)) {
-                *codepoint = '?';
-                return 1;
-            }
-            *codepoint = (uint16_t)(((uint16_t)(b0 & 0x0Fu) << 12) |
-                                    ((uint16_t)(b1 & 0x3Fu) << 6) |
-                                    (uint16_t)(b2 & 0x3Fu));
-            return 1;
-        }
-
-        *codepoint = '?';
-        return 1;
-    }
-    return 0;
-}
-
-/* 判断阅读页字符是否只占空白位置。 */
-static uint8_t epd_text_is_space(uint16_t codepoint)
-{
-    return (uint8_t)(codepoint == ' ' ||
-                     codepoint == '\t' ||
-                     codepoint == 0x3000u);
-}
-
-/* 返回阅读页中一个码点的排版宽度。 */
-static uint8_t epd_text_char_width(uint16_t codepoint)
-{
-    if (codepoint < 128u) {
-        return EPD_TEXT_ASCII_W;
-    }
-    return EPD_TEXT_CELL_W;
-}
-
-/* 按当前页起点解析一屏文本，并记录每个需要绘制的字符位置。 */
-static uint8_t epd_text_build_page(uint16_t screen_w, uint8_t top_y, uint8_t line_count)
-{
-    uint32_t offset;
-    uint32_t item_offset;
-    uint16_t codepoint;
-    uint16_t x;
-    uint16_t y;
-    uint8_t line;
-    uint8_t width;
-    uint8_t skip_lf;
-
-    g_text_item_count = 0;
-    if (!sd_assets_begin_text(g_text_page_offset, &g_text_file_size)) {
-        g_text_next_offset = g_text_page_offset;
-        return 0;
-    }
-    if (g_text_page_offset > g_text_file_size) {
-        g_text_page_offset = 0;
-        if (!sd_assets_begin_text(0, &g_text_file_size)) {
-            g_text_next_offset = 0;
-            return 0;
-        }
-    }
-
-    offset = g_text_page_offset;
-    x = EPD_TEXT_MARGIN_X;
-    y = top_y;
-    line = 0;
-    skip_lf = 0;
-
-    while (line < line_count && g_text_item_count < EPD_TEXT_MAX_ITEMS) {
-        item_offset = offset;
-        if (!epd_text_decode_next(&offset, &codepoint, &skip_lf)) {
-            break;
-        }
-
-        if (codepoint == '\n') {
-            line++;
-            x = EPD_TEXT_MARGIN_X;
-            y = (uint16_t)(y + EPD_TEXT_LINE_HEIGHT);
-            continue;
-        }
-        if (codepoint == '\t') {
-            codepoint = ' ';
-        }
-
-        width = epd_text_char_width(codepoint);
-        if ((uint16_t)(x + width) > screen_w) {
-            line++;
-            if (line >= line_count) {
-                offset = item_offset;
-                break;
-            }
-            x = EPD_TEXT_MARGIN_X;
-            y = (uint16_t)(y + EPD_TEXT_LINE_HEIGHT);
-        }
-        if (epd_text_is_space(codepoint) && x == EPD_TEXT_MARGIN_X) {
-            continue;
-        }
-        if (!epd_text_is_space(codepoint)) {
-            g_text_items[g_text_item_count].codepoint = codepoint;
-            g_text_items[g_text_item_count].x = (uint8_t)x;
-            g_text_items[g_text_item_count].y = (uint8_t)y;
-            g_text_item_count++;
-        }
-        x = (uint16_t)(x + width);
-    }
-
-    if (offset >= g_text_file_size) {
-        g_text_next_offset = 0;
-    } else {
-        g_text_next_offset = offset;
-    }
-    return 1;
-}
-
 /* 在 SSD1673 帧缓冲中绘制一个阅读页码点。 */
-static void epd_draw_text_item(const EpdTextItem *item)
+static void epd_draw_text_item(const TextReaderItem *item)
 {
-    SdGlyphInfo info;
+    AppGlyphInfo info;
     uint16_t py;
 
     if (item->codepoint < 128u) {
         epd_draw_char(item->x, item->y, (char)item->codepoint, 1);
         return;
     }
-    if (!sd_assets_begin_text_glyph(item->codepoint, &info)) {
+    if (!app_resources_begin_text_glyph(item->codepoint, &info)) {
         epd_draw_char(item->x, item->y, '?', 1);
         return;
     }
     for (py = 0; py < info.height; py++) {
-        if (!sd_assets_read_glyph_row(g_sd_row_buf, info.stride)) {
+        if (!app_resources_read_glyph_row(g_resource_row_buf, info.stride)) {
             return;
         }
-        epd_draw_1bpp_row(info.width, g_sd_row_buf, py, item->x, item->y, 1);
+        epd_draw_1bpp_row(info.width, g_resource_row_buf, py, item->x, item->y, 1);
     }
 }
 
 /* 在备用驱动帧缓冲中绘制一个阅读页码点。 */
-static void epd_alt_draw_text_item(const EpdTextItem *item)
+static void epd_alt_draw_text_item(const TextReaderItem *item)
 {
-    SdGlyphInfo info;
+    AppGlyphInfo info;
     uint16_t py;
 
     if (item->codepoint < 128u) {
         epd_alt_draw_char(item->x, item->y, (char)item->codepoint, 1);
         return;
     }
-    if (!sd_assets_begin_text_glyph(item->codepoint, &info)) {
+    if (!app_resources_begin_text_glyph(item->codepoint, &info)) {
         epd_alt_draw_char(item->x, item->y, '?', 1);
         return;
     }
     for (py = 0; py < info.height; py++) {
-        if (!sd_assets_read_glyph_row(g_sd_row_buf, info.stride)) {
+        if (!app_resources_read_glyph_row(g_resource_row_buf, info.stride)) {
             return;
         }
-        epd_alt_draw_1bpp_row(info.width, g_sd_row_buf, py, item->x, item->y, 1);
+        epd_alt_draw_1bpp_row(info.width, g_resource_row_buf, py, item->x, item->y, 1);
     }
 }
 
-/* 使用 SSD1673 渲染 SD 卡小说阅读页。 */
+/* 使用 SSD1673 渲染文本阅读页。 */
 static void epd_show_text_page(void)
 {
+    TextReaderPage page;
     uint8_t i;
 
     epd_clear_buffer();
     epd_draw_string(0, 0, "BOOK", 1);
-    if (!epd_text_build_page(EPD_SCREEN_W, EPD_TEXT_TOP_Y, EPD_TEXT_LINES)) {
+    if (!text_reader_build_page(EPD_SCREEN_W, EPD_TEXT_TOP_Y, EPD_TEXT_LINES, &page)) {
         epd_draw_string(54, 44, "NO BOOK", 2);
         epd_draw_string(42, 68, "TEXT/BOOK.TXT", 1);
         epd_flush_partial();
         return;
     }
-    for (i = 0; i < g_text_item_count; i++) {
-        epd_draw_text_item(&g_text_items[i]);
+    for (i = 0; i < page.count; i++) {
+        epd_draw_text_item(&page.items[i]);
     }
-    if (g_text_next_offset == 0 && g_text_file_size != 0) {
+    if (page.end) {
         epd_draw_string(220, 0, "END", 1);
     }
     epd_flush_partial();
 }
 
-/* 使用备用驱动渲染 SD 卡小说阅读页。 */
+/* 使用备用驱动渲染文本阅读页。 */
 static void epd_alt_show_text_page(void)
 {
+    TextReaderPage page;
     uint8_t i;
 
     epd_alt_clear_buffer();
     epd_alt_draw_string(0, 0, "BOOK", 1);
-    if (!epd_text_build_page(EPD_ALT_SCREEN_W, EPD_TEXT_ALT_TOP_Y, EPD_TEXT_ALT_LINES)) {
+    if (!text_reader_build_page(EPD_ALT_SCREEN_W, EPD_TEXT_ALT_TOP_Y, EPD_TEXT_ALT_LINES, &page)) {
         epd_alt_draw_string(30, 52, "NO BOOK", 2);
         epd_alt_draw_string(18, 76, "TEXT/BOOK.TXT", 1);
         (void)epd_alt_write_buffer_to_screen(epd_buf);
         return;
     }
-    for (i = 0; i < g_text_item_count; i++) {
-        epd_alt_draw_text_item(&g_text_items[i]);
+    for (i = 0; i < page.count; i++) {
+        epd_alt_draw_text_item(&page.items[i]);
     }
-    if (g_text_next_offset == 0 && g_text_file_size != 0) {
+    if (page.end) {
         epd_alt_draw_string(150, 0, "END", 1);
     }
     (void)epd_alt_write_buffer_to_screen(epd_buf);
@@ -1945,10 +1759,9 @@ void epd_show_gif_playback(void)
     g_epd_gif_playback = 1;
     g_epd_render_view = EPD_VIEW_GIF;
     g_mascot_frame_index = 0;
-    (void)sd_assets_reload();
-    g_gif_image_id = sd_assets_first_gif_image();
+    g_gif_image_id = app_resources_first_gif_image();
     if (g_gif_image_id == 0) {
-        g_gif_image_id = SD_ASSET_IMAGE_MASCOT;
+        g_gif_image_id = APP_RESOURCE_IMAGE_MASCOT;
     }
     g_epd_last_gif_frame_tick = board_tick10();
     epd_request_render(1);
@@ -1962,7 +1775,7 @@ void epd_gif_prev_asset(void)
         epd_show_gif_playback();
         return;
     }
-    next_id = sd_assets_step_gif_image(g_gif_image_id, -1);
+    next_id = app_resources_step_gif_image(g_gif_image_id, -1);
     if (next_id != 0) {
         g_gif_image_id = next_id;
         g_mascot_frame_index = 0;
@@ -1978,7 +1791,7 @@ void epd_gif_next_asset(void)
         epd_show_gif_playback();
         return;
     }
-    next_id = sd_assets_step_gif_image(g_gif_image_id, 1);
+    next_id = app_resources_step_gif_image(g_gif_image_id, 1);
     if (next_id != 0) {
         g_gif_image_id = next_id;
         g_mascot_frame_index = 0;
@@ -1992,10 +1805,7 @@ void epd_show_text_reader(void)
     g_epd_history_playback = 0;
     g_epd_gif_playback = 0;
     g_epd_render_view = EPD_VIEW_TEXT;
-    g_text_page_offset = 0;
-    g_text_next_offset = 0;
-    g_text_prev_count = 0;
-    (void)sd_assets_reload();
+    text_reader_reset();
     epd_request_render(1);
 }
 
@@ -2005,37 +1815,17 @@ void epd_text_prev_page(void)
         epd_show_text_reader();
         return;
     }
-    if (g_text_prev_count > 0) {
-        g_text_prev_count--;
-        g_text_page_offset = g_text_prev_offsets[g_text_prev_count];
-    } else {
-        g_text_page_offset = 0;
-    }
+    text_reader_prev_page();
     epd_request_render(1);
 }
 
 void epd_text_next_page(void)
 {
-    uint8_t i;
-    uint32_t next_offset;
-
     if (g_epd_render_view != EPD_VIEW_TEXT) {
         epd_show_text_reader();
         return;
     }
-    next_offset = g_text_next_offset;
-    if (next_offset == g_text_page_offset && !g_epd_render_dirty) {
-        return;
-    }
-    if (g_text_prev_count >= EPD_TEXT_HISTORY_DEPTH) {
-        for (i = 1; i < EPD_TEXT_HISTORY_DEPTH; i++) {
-            g_text_prev_offsets[i - 1u] = g_text_prev_offsets[i];
-        }
-        g_text_prev_count = (uint8_t)(EPD_TEXT_HISTORY_DEPTH - 1u);
-    }
-    g_text_prev_offsets[g_text_prev_count] = g_text_page_offset;
-    g_text_prev_count++;
-    g_text_page_offset = next_offset;
+    text_reader_next_page();
     epd_request_render(1);
 }
 

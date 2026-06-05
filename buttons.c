@@ -1,6 +1,7 @@
 #include "buttons.h"
 
 #include "app_state.h"
+#include "app_resources.h"
 #include "board.h"
 #include "epaper.h"
 
@@ -187,6 +188,7 @@ static void buttons_enter_settings(void)
 static void buttons_enter_text(void)
 {
     g_button_mode = BUTTON_MODE_TEXT;
+    (void)app_resources_reload();
     epd_show_text_reader();
 }
 
@@ -194,6 +196,7 @@ static void buttons_enter_text(void)
 static void buttons_enter_gif(void)
 {
     g_button_mode = BUTTON_MODE_GIF;
+    (void)app_resources_reload();
     epd_show_gif_playback();
 }
 

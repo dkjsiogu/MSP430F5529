@@ -27,16 +27,18 @@
 
 ```text
 .
-├── main.c                 主循环，调度采样、显示、按键、Flash 和低功耗
+├── main.c                 主循环，显式初始化资源层并调度采样、显示、按键、Flash 和低功耗
 ├── app_config.h           全局硬件引脚和应用参数配置
 ├── app_types.h            温度样本、历史记录等公共数据结构
 ├── app_state.c/.h         应用设置管理和 Info Flash 持久化
+├── app_resources.c/.h     应用资源门面，向主循环和渲染层提供图片、字库和文本接口
 ├── board.c/.h             时钟、GPIO、采样定时器、蜂鸣器、心跳 LED
 ├── buttons.c/.h           S1-S4 按键采集、去抖和设置状态机
 ├── sensors.c/.h           DIE、NTC、TMP421 温度采集
-├── epaper.c/.h            墨水屏驱动和页面渲染
+├── epaper.c/.h            墨水屏驱动和页面渲染，只消费资源帧和阅读页结果
 ├── flash_log.c/.h         温度历史记录 Flash 存取
-├── sd_assets.c/.h         FAT32 SD 卡索引、图片和字库资源加载
+├── sd_assets.c/.h         FAT32 SD 卡索引、图片、字库和文本的底层加载
+├── text_reader.c/.h       BOOK.TXT UTF-8 解码、分页和上一页偏移栈
 ├── fatfs/                 Pocket Kit SD SPI 适配后的 FatFs 文件系统
 ├── serial_control.c/.h    串口接收命令处理
 ├── uart.c/.h              UART1 接收中断封装

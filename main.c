@@ -1,4 +1,5 @@
 #include "app_state.h"
+#include "app_resources.h"
 #include "board.h"
 #include "buttons.h"
 #include "epaper.h"
@@ -25,6 +26,7 @@ int main(void)
     uart_init();
     sensors_init();
     flash_scan();
+    app_resources_init();
     epd_init();
     sample_timer_init();
 
