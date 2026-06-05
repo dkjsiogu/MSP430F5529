@@ -7,6 +7,9 @@ Debug/*
 !Debug/subdir_rules.mk
 !Debug/subdir_vars.mk
 !Debug/ccsObjs.opt
+!Debug/fatfs/
+!Debug/fatfs/subdir_rules.mk
+!Debug/fatfs/subdir_vars.mk
 
 *.obj
 *.out

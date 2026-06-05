@@ -3,7 +3,7 @@
 #include "board.h"
 #include "flash_log.h"
 #include "format.h"
-#include "image_frames.h"
+#include "sd_assets.h"
 static const uint8_t font5x7[96][5] = {
     {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00},
     {0x00,0x07,0x00,0x07,0x00}, {0x14,0x7F,0x14,0x7F,0x14},
@@ -54,6 +54,7 @@ static const uint8_t font5x7[96][5] = {
     {0x00,0x00,0x7F,0x00,0x00}, {0x00,0x41,0x36,0x08,0x00},
     {0x10,0x08,0x08,0x10,0x08}, {0x00,0x06,0x09,0x09,0x06}
 };
+
 static const uint8_t epd_lut[29] = {
     0x50, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x11, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x0F, 0x0F, 0x0F,
@@ -87,6 +88,14 @@ static const uint8_t epd_alt_lut[90] = {
 #define EPD_VIEW_SETTINGS           2u /* 设置界面渲染目标。 */
 #define EPD_VIEW_GIF                3u /* 全屏 GIF 动画播放界面渲染目标。 */
 #define EPD_SETTINGS_ROWS           5u /* 设置页面显示的配置项数量。 */
+#define EPD_HOURGLASS_X             198 /* SSD1673 主界面沙漏默认 X 坐标，SD 索引缺失时使用。 */
+#define EPD_HOURGLASS_Y             12  /* SSD1673 主界面沙漏默认 Y 坐标，SD 索引缺失时使用。 */
+#define EPD_ALT_HOURGLASS_X         120 /* 备用驱动主界面沙漏 X 坐标。 */
+#define EPD_ALT_HOURGLASS_Y         4   /* 备用驱动主界面沙漏 Y 坐标。 */
+#define EPD_ZHENG_X                 170 /* SSD1673 主界面“郑”字绘制 X 坐标，位于沙漏左侧。 */
+#define EPD_ZHENG_Y                 38  /* SSD1673 主界面“郑”字绘制 Y 坐标。 */
+#define EPD_ALT_ZHENG_X             94  /* 备用驱动主界面“郑”字绘制 X 坐标。 */
+#define EPD_ALT_ZHENG_Y             96  /* 备用驱动主界面“郑”字绘制 Y 坐标。 */
 
 static uint8_t g_epd_auto_update = 1;
 static uint8_t g_epd_driver = EPD_DRIVER_SSD1673;
@@ -103,6 +112,7 @@ static uint16_t g_epd_last_history_scroll_tick = 0;
 static uint16_t g_epd_last_gif_frame_tick = 0;
 static TempSample g_epd_target_sample;
 static uint8_t epd_buf[EPD_BUF_SIZE];
+static uint8_t g_sd_row_buf[SD_ASSET_ROW_MAX_BYTES];
 static uint8_t g_mascot_frame_index = 0;
 static uint16_t g_hourglass_cycle_start_tick = 0;
 static int32_t g_tmp_avg_sum_t10 = 0;
@@ -774,8 +784,21 @@ static void epd_pixel(uint16_t x, uint16_t y, uint8_t black)
     }
 }
 
+/* 在 SSD1673 帧缓冲中填充一个小矩形，用于局部清出调试标识背景。 */
+static void epd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t black)
+{
+    uint16_t px;
+    uint16_t py;
+
+    for (py = y; py < (uint16_t)(y + h) && py < EPD_SCREEN_H; py++) {
+        for (px = x; px < (uint16_t)(x + w) && px < EPD_SCREEN_W; px++) {
+            epd_pixel(px, py, black);
+        }
+    }
+}
+
 /* 根据沙漏周期时间选择图片关键帧，末尾按翻转时长映射到最后几帧。 */
-static uint8_t epd_hourglass_asset_frame_index(const ImageSequence *seq)
+static uint8_t epd_hourglass_asset_frame_index(uint8_t frame_count)
 {
     uint16_t elapsed;
     uint16_t period_ticks;
@@ -783,7 +806,7 @@ static uint8_t epd_hourglass_asset_frame_index(const ImageSequence *seq)
     uint8_t phase;
     uint8_t index;
 
-    if (seq->frame_count == 0) {
+    if (frame_count == 0) {
         return 0;
     }
 
@@ -792,7 +815,7 @@ static uint8_t epd_hourglass_asset_frame_index(const ImageSequence *seq)
     if (period_ticks == 0) {
         return 0;
     }
-    normal_count = seq->frame_count;
+    normal_count = frame_count;
     if (normal_count > 3u) {
         normal_count = (uint16_t)(normal_count - 3u);
     }
@@ -801,10 +824,10 @@ static uint8_t epd_hourglass_asset_frame_index(const ImageSequence *seq)
     }
 
     phase = epd_hourglass_flip_phase(elapsed, period_ticks);
-    if (phase > 0 && seq->frame_count > normal_count) {
+    if (phase > 0 && frame_count > normal_count) {
         index = (uint8_t)(normal_count + phase - 1u);
-        if (index >= seq->frame_count) {
-            index = (uint8_t)(seq->frame_count - 1u);
+        if (index >= frame_count) {
+            index = (uint8_t)(frame_count - 1u);
         }
         return index;
     }
@@ -816,64 +839,79 @@ static uint8_t epd_hourglass_asset_frame_index(const ImageSequence *seq)
     return index;
 }
 
-/* 将一帧 1bpp 图片资源贴到 SSD1673 帧缓冲，bit=1 的像素绘制为黑色。 */
-static void epd_draw_image_frame(const ImageFrame *frame, int16_t x, int16_t y, uint8_t scale)
+/* 把一行 1bpp 数据贴到 SSD1673 帧缓冲。 */
+static void epd_draw_1bpp_row(uint16_t width, const uint8_t *row, uint16_t py,
+                              int16_t x, int16_t y, uint8_t scale)
 {
     uint16_t px;
-    uint16_t py;
     uint8_t bit;
     uint8_t sx;
     uint8_t sy;
-    const uint8_t *row;
 
     if (scale == 0) {
         scale = 1;
     }
 
-    for (py = 0; py < frame->height; py++) {
-        row = frame->data + (uint16_t)(py * frame->stride);
-        for (px = 0; px < frame->width; px++) {
-            bit = (uint8_t)(0x80u >> (px & 7u));
-            if ((row[px >> 3] & bit) == 0) {
-                continue;
-            }
-            for (sy = 0; sy < scale; sy++) {
-                for (sx = 0; sx < scale; sx++) {
-                    epd_pixel((uint16_t)(x + (int16_t)(px * scale + sx)),
-                              (uint16_t)(y + (int16_t)(py * scale + sy)), 1);
-                }
+    for (px = 0; px < width; px++) {
+        bit = (uint8_t)(0x80u >> (px & 7u));
+        if ((row[px >> 3] & bit) == 0) {
+            continue;
+        }
+        for (sy = 0; sy < scale; sy++) {
+            for (sx = 0; sx < scale; sx++) {
+                epd_pixel((uint16_t)(x + (int16_t)(px * scale + sx)),
+                          (uint16_t)(y + (int16_t)(py * scale + sy)), 1);
             }
         }
     }
 }
 
-/* 从图片序列中选择一帧并贴到 SSD1673 帧缓冲。 */
-static void epd_draw_image_sequence(const ImageSequence *seq, uint8_t index, int16_t x, int16_t y, uint8_t scale)
+/* 从当前 SD 图片资源按行读取并贴到 SSD1673 帧缓冲。 */
+static uint8_t epd_draw_sd_image_rows(const SdImageInfo *info, int16_t x, int16_t y)
 {
-    if (seq->frame_count == 0) {
-        return;
-    }
-    if (index >= seq->frame_count) {
-        index = (uint8_t)(seq->frame_count - 1u);
-    }
-    epd_draw_image_frame(&seq->frames[index], x, y, scale);
-}
-
-/* 计算图片序列在指定屏幕方向上的居中坐标，避免换资源尺寸后手工改位置。 */
-static int16_t epd_image_center_coord(const ImageSequence *seq, uint16_t screen_size, uint8_t horizontal)
-{
-    uint16_t image_size;
+    uint16_t py;
     uint8_t scale;
 
-    if (seq->frame_count == 0) {
-        return 0;
-    }
-
-    scale = seq->default_scale;
+    scale = info->default_scale;
     if (scale == 0) {
         scale = 1;
     }
-    image_size = horizontal ? seq->frames[0].width : seq->frames[0].height;
+
+    for (py = 0; py < info->height; py++) {
+        if (!sd_assets_read_image_row(g_sd_row_buf, info->stride)) {
+            return 0;
+        }
+        epd_draw_1bpp_row(info->width, g_sd_row_buf, py, x, y, scale);
+    }
+    return 1;
+}
+
+/* 按帧数循环推进图片帧游标。 */
+static uint8_t epd_next_frame_index(uint8_t frame_count, uint8_t *cursor)
+{
+    uint8_t index;
+
+    if (frame_count == 0) {
+        return 0;
+    }
+    if (*cursor >= frame_count) {
+        *cursor = 0;
+    }
+
+    index = *cursor;
+    *cursor = (uint8_t)(*cursor + 1u);
+    if (*cursor >= frame_count) {
+        *cursor = 0;
+    }
+    return index;
+}
+
+/* 计算指定尺寸图片在屏幕单方向上的居中坐标。 */
+static int16_t epd_center_coord(uint16_t image_size, uint16_t screen_size, uint8_t scale)
+{
+    if (scale == 0) {
+        scale = 1;
+    }
     image_size = (uint16_t)(image_size * scale);
     if (image_size >= screen_size) {
         return 0;
@@ -881,24 +919,21 @@ static int16_t epd_image_center_coord(const ImageSequence *seq, uint16_t screen_
     return (int16_t)((screen_size - image_size) / 2u);
 }
 
-/* 按渲染节拍循环推进图片序列帧，供 GIF 转换资源播放。 */
-static uint8_t epd_image_next_loop_frame(const ImageSequence *seq, uint8_t *cursor)
+/* 在 SSD1673 帧缓冲中绘制 SD 字库里的“郑”字点阵。 */
+static void epd_draw_zheng_glyph(int16_t x, int16_t y)
 {
-    uint8_t index;
+    SdGlyphInfo info;
+    uint16_t py;
 
-    if (seq->frame_count == 0) {
-        return 0;
+    if (!sd_assets_begin_glyph(SD_ASSET_GLYPH_ZHENG, &info)) {
+        return;
     }
-    if (*cursor >= seq->frame_count) {
-        *cursor = 0;
+    for (py = 0; py < info.height; py++) {
+        if (!sd_assets_read_glyph_row(g_sd_row_buf, info.stride)) {
+            return;
+        }
+        epd_draw_1bpp_row(info.width, g_sd_row_buf, py, x, y, 1);
     }
-
-    index = *cursor;
-    *cursor = (uint8_t)(*cursor + 1u);
-    if (*cursor >= seq->frame_count) {
-        *cursor = 0;
-    }
-    return index;
 }
 
 /* 在 SSD1673 帧缓冲中绘制沙漏图片下方的周期和 TMP 平均温度文字。 */
@@ -919,23 +954,79 @@ static void epd_draw_hourglass_caption(uint16_t x, uint16_t y)
 }
 
 /* 在 SSD1673 主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
-static void epd_draw_hourglass(int16_t x, int16_t y)
+static void epd_draw_hourglass(void)
 {
+    SdImageInfo info;
+    int16_t x;
+    int16_t y;
     uint8_t frame_index;
 
-    frame_index = epd_hourglass_asset_frame_index(&g_hourglass_sequence);
-    epd_draw_image_sequence(&g_hourglass_sequence, frame_index, x, y, g_hourglass_sequence.default_scale);
+    x = EPD_HOURGLASS_X;
+    y = EPD_HOURGLASS_Y;
+    if (!sd_assets_get_image_info(SD_ASSET_IMAGE_HOURGLASS, &info)) {
+        return;
+    }
+    x = info.default_x;
+    y = info.default_y;
+    frame_index = epd_hourglass_asset_frame_index(info.frame_count);
+    if (sd_assets_begin_image_frame(SD_ASSET_IMAGE_HOURGLASS, frame_index)) {
+        (void)epd_draw_sd_image_rows(&info, x, y);
+    }
     epd_draw_hourglass_caption((uint16_t)(x + 4), (uint16_t)(y + 68));
+}
+
+/* 在 GIF 页面左上角标记当前帧来源或失败状态。 */
+static void epd_draw_gif_source_tag(const char *label)
+{
+    epd_fill_rect(0, 0, 36, 10, 0);
+    epd_draw_string(2, 2, label, 1);
+}
+
+/* SD 卡 GIF 资源不可用时显示明确状态，避免误以为还在播放内置资源。 */
+static void epd_draw_gif_missing(void)
+{
+    epd_draw_gif_source_tag("NO SD");
+    epd_draw_string(86, 48, "NO SD", 2);
+    epd_draw_string(72, 72, "MASCOT.BIN", 1);
+}
+
+/* 从 SD 卡按行读取 GIF 帧并贴到 SSD1673 帧缓冲，避免占用整帧 RAM 缓存。 */
+static uint8_t epd_draw_sd_mascot_frame(const SdImageInfo *info)
+{
+    int16_t x;
+    int16_t y;
+    uint8_t scale;
+
+    scale = info->default_scale;
+    if (scale == 0) {
+        scale = 1;
+    }
+    x = epd_center_coord(info->width, EPD_SCREEN_W, scale);
+    y = epd_center_coord(info->height, EPD_SCREEN_H, scale);
+
+    if (!epd_draw_sd_image_rows(info, x, y)) {
+        return 0;
+    }
+    epd_draw_gif_source_tag("SD");
+    return 1;
 }
 
 /* 在 SSD1673 帧缓冲中居中绘制 GIF 转换动画当前帧。 */
 static void epd_draw_gif_frame(void)
 {
-    epd_draw_image_sequence(&g_mascot_sequence,
-                            epd_image_next_loop_frame(&g_mascot_sequence, &g_mascot_frame_index),
-                            epd_image_center_coord(&g_mascot_sequence, EPD_SCREEN_W, 1),
-                            epd_image_center_coord(&g_mascot_sequence, EPD_SCREEN_H, 0),
-                            g_mascot_sequence.default_scale);
+    SdImageInfo info;
+    uint8_t index;
+
+    if (sd_assets_get_image_info(SD_ASSET_IMAGE_MASCOT, &info)) {
+        index = epd_next_frame_index(info.frame_count, &g_mascot_frame_index);
+        if (sd_assets_begin_image_frame(SD_ASSET_IMAGE_MASCOT, index) &&
+            epd_draw_sd_mascot_frame(&info)) {
+            return;
+        }
+    }
+
+    epd_clear_buffer();
+    epd_draw_gif_missing();
 }
 
 /* 使用 5x7 字库在 SSD1673 帧缓冲中绘制一个字符。 */
@@ -1031,47 +1122,61 @@ static void epd_alt_pixel(uint16_t x, uint16_t y, uint8_t black)
     }
 }
 
-/* 将一帧 1bpp 图片资源贴到备用驱动帧缓冲，bit=1 的像素绘制为黑色。 */
-static void epd_alt_draw_image_frame(const ImageFrame *frame, int16_t x, int16_t y, uint8_t scale)
+/* 在备用驱动帧缓冲中填充一个小矩形，用于局部清出调试标识背景。 */
+static void epd_alt_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t black)
 {
     uint16_t px;
     uint16_t py;
+
+    for (py = y; py < (uint16_t)(y + h) && py < EPD_ALT_SCREEN_H; py++) {
+        for (px = x; px < (uint16_t)(x + w) && px < EPD_ALT_SCREEN_W; px++) {
+            epd_alt_pixel(px, py, black);
+        }
+    }
+}
+
+/* 把一行 1bpp 数据贴到备用驱动帧缓冲。 */
+static void epd_alt_draw_1bpp_row(uint16_t width, const uint8_t *row, uint16_t py,
+                                  int16_t x, int16_t y, uint8_t scale)
+{
+    uint16_t px;
     uint8_t bit;
     uint8_t sx;
     uint8_t sy;
-    const uint8_t *row;
 
     if (scale == 0) {
         scale = 1;
     }
 
-    for (py = 0; py < frame->height; py++) {
-        row = frame->data + (uint16_t)(py * frame->stride);
-        for (px = 0; px < frame->width; px++) {
-            bit = (uint8_t)(0x80u >> (px & 7u));
-            if ((row[px >> 3] & bit) == 0) {
-                continue;
-            }
-            for (sy = 0; sy < scale; sy++) {
-                for (sx = 0; sx < scale; sx++) {
-                    epd_alt_pixel((uint16_t)(x + (int16_t)(px * scale + sx)),
-                                  (uint16_t)(y + (int16_t)(py * scale + sy)), 1);
-                }
+    for (px = 0; px < width; px++) {
+        bit = (uint8_t)(0x80u >> (px & 7u));
+        if ((row[px >> 3] & bit) == 0) {
+            continue;
+        }
+        for (sy = 0; sy < scale; sy++) {
+            for (sx = 0; sx < scale; sx++) {
+                epd_alt_pixel((uint16_t)(x + (int16_t)(px * scale + sx)),
+                              (uint16_t)(y + (int16_t)(py * scale + sy)), 1);
             }
         }
     }
 }
 
-/* 从图片序列中选择一帧并贴到备用驱动帧缓冲。 */
-static void epd_alt_draw_image_sequence(const ImageSequence *seq, uint8_t index, int16_t x, int16_t y, uint8_t scale)
+/* 在备用驱动帧缓冲中绘制 24x24 的“郑”字点阵。 */
+static void epd_alt_draw_zheng_glyph(int16_t x, int16_t y)
 {
-    if (seq->frame_count == 0) {
+    SdGlyphInfo info;
+    uint16_t py;
+
+    if (!sd_assets_begin_glyph(SD_ASSET_GLYPH_ZHENG, &info)) {
         return;
     }
-    if (index >= seq->frame_count) {
-        index = (uint8_t)(seq->frame_count - 1u);
+    for (py = 0; py < info.height; py++) {
+        if (!sd_assets_read_glyph_row(g_sd_row_buf, info.stride)) {
+            return;
+        }
+        epd_alt_draw_1bpp_row(info.width, g_sd_row_buf, py, x, y, 1);
     }
-    epd_alt_draw_image_frame(&seq->frames[index], x, y, scale);
 }
 
 /* 在备用驱动帧缓冲中绘制沙漏图片下方的周期和 TMP 平均温度文字。 */
@@ -1092,24 +1197,99 @@ static void epd_alt_draw_hourglass_caption(uint16_t x, uint16_t y)
 }
 
 /* 在备用驱动主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
-static void epd_alt_draw_hourglass(int16_t x, int16_t y)
+static uint8_t epd_alt_draw_sd_image_rows(const SdImageInfo *info, int16_t x, int16_t y)
 {
+    uint16_t py;
+    uint8_t scale;
+
+    scale = info->default_scale;
+    if (scale == 0) {
+        scale = 1;
+    }
+
+    for (py = 0; py < info->height; py++) {
+        if (!sd_assets_read_image_row(g_sd_row_buf, info->stride)) {
+            return 0;
+        }
+        epd_alt_draw_1bpp_row(info->width, g_sd_row_buf, py, x, y, scale);
+    }
+    return 1;
+}
+
+/* 在备用驱动主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
+static void epd_alt_draw_hourglass(void)
+{
+    SdImageInfo info;
+    int16_t x;
+    int16_t y;
     uint8_t frame_index;
 
-    frame_index = epd_hourglass_asset_frame_index(&g_hourglass_sequence);
-    epd_alt_draw_image_sequence(&g_hourglass_sequence, frame_index, x, y, g_hourglass_sequence.default_scale);
+    x = EPD_ALT_HOURGLASS_X;
+    y = EPD_ALT_HOURGLASS_Y;
+    if (!sd_assets_get_image_info(SD_ASSET_IMAGE_HOURGLASS, &info)) {
+        return;
+    }
+    frame_index = epd_hourglass_asset_frame_index(info.frame_count);
+    if (sd_assets_begin_image_frame(SD_ASSET_IMAGE_HOURGLASS, frame_index)) {
+        (void)epd_alt_draw_sd_image_rows(&info, x, y);
+    }
     epd_alt_draw_hourglass_caption((uint16_t)(x + 4), (uint16_t)(y + 68));
+}
+
+/* 在备用 GIF 页面左上角标记当前帧来源或失败状态。 */
+static void epd_alt_draw_gif_source_tag(const char *label)
+{
+    epd_alt_fill_rect(0, 0, 36, 10, 0);
+    epd_alt_draw_string(2, 2, label, 1);
+}
+
+/* 备用驱动下的 SD GIF 资源缺失提示。 */
+static void epd_alt_draw_gif_missing(void)
+{
+    epd_alt_draw_gif_source_tag("NO SD");
+    epd_alt_draw_string(48, 56, "NO SD", 2);
+    epd_alt_draw_string(36, 80, "MASCOT.BIN", 1);
+}
+
+/* 从 SD 卡按行读取 GIF 帧并贴到备用驱动帧缓冲。 */
+static uint8_t epd_alt_draw_sd_mascot_frame(const SdImageInfo *info)
+{
+    int16_t x;
+    int16_t y;
+    uint8_t scale;
+
+    scale = info->default_scale;
+    if (scale == 0) {
+        scale = 1;
+    }
+    x = epd_center_coord(info->width, EPD_ALT_SCREEN_W, scale);
+    y = epd_center_coord(info->height, EPD_ALT_SCREEN_H, scale);
+
+    if (!epd_alt_draw_sd_image_rows(info, x, y)) {
+        return 0;
+    }
+    epd_alt_draw_gif_source_tag("SD");
+    return 1;
 }
 
 /* 使用备用驱动渲染全屏 GIF 动画当前帧。 */
 static void epd_alt_show_gif(void)
 {
+    SdImageInfo info;
+    uint8_t index;
+
     epd_alt_clear_buffer();
-    epd_alt_draw_image_sequence(&g_mascot_sequence,
-                                epd_image_next_loop_frame(&g_mascot_sequence, &g_mascot_frame_index),
-                                epd_image_center_coord(&g_mascot_sequence, EPD_ALT_SCREEN_W, 1),
-                                epd_image_center_coord(&g_mascot_sequence, EPD_ALT_SCREEN_H, 0),
-                                g_mascot_sequence.default_scale);
+    if (sd_assets_get_image_info(SD_ASSET_IMAGE_MASCOT, &info)) {
+        index = epd_next_frame_index(info.frame_count, &g_mascot_frame_index);
+        if (sd_assets_begin_image_frame(SD_ASSET_IMAGE_MASCOT, index) &&
+            epd_alt_draw_sd_mascot_frame(&info)) {
+            (void)epd_alt_write_buffer_to_screen(epd_buf);
+            return;
+        }
+    }
+
+    epd_alt_clear_buffer();
+    epd_alt_draw_gif_missing();
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
@@ -1266,7 +1446,8 @@ static void epd_alt_show_current(const TempSample *s)
     for (i = 0; i < 4u; i++) {
         epd_alt_draw_string(0, (uint16_t)(22u + i * 18u), lines[i], 2);
     }
-    epd_alt_draw_hourglass(120, 4);
+    epd_alt_draw_hourglass();
+    epd_alt_draw_zheng_glyph(EPD_ALT_ZHENG_X, EPD_ALT_ZHENG_Y);
     if (sample_over_threshold(s)) {
         epd_alt_draw_string(92, 124, "ALM 1", 2);
     } else {
@@ -1292,7 +1473,8 @@ static void epd_show_current(const TempSample *s)
     } else {
         epd_draw_string(154, 104, "ALM 0", 2);
     }
-    epd_draw_hourglass(g_hourglass_sequence.default_x, g_hourglass_sequence.default_y);
+    epd_draw_hourglass();
+    epd_draw_zheng_glyph(EPD_ZHENG_X, EPD_ZHENG_Y);
     epd_flush_partial();
 }
 
@@ -1480,6 +1662,7 @@ void epd_show_gif_playback(void)
     g_epd_render_view = EPD_VIEW_GIF;
     g_mascot_frame_index = 0;
     g_epd_last_gif_frame_tick = board_tick10();
+    (void)sd_assets_reload();
     epd_request_render(1);
 }
 

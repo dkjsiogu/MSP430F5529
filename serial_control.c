@@ -4,6 +4,7 @@
 #include "board.h"
 #include "epaper.h"
 #include "flash_log.h"
+#include "sd_assets.h"
 #include "sensors.h"
 #include "uart.h"
 
@@ -66,6 +67,11 @@ static void handle_rx_char(uint8_t cmd)
         break;
     case 'r':
         epd_resume_auto();
+        sample_timer_force_due();
+        break;
+    case 'w':
+        (void)sd_assets_write_probe();
+        epd_force_next_current_refresh();
         sample_timer_force_due();
         break;
     default:

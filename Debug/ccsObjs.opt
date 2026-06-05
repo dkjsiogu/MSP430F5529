@@ -4,11 +4,14 @@
 "./epaper.obj"
 "./flash_log.obj"
 "./format.obj"
-"./image_frames.obj"
 "./main.obj"
+"./sd_assets.obj"
 "./sensors.obj"
 "./serial_control.obj"
 "./uart.obj"
+"./fatfs/HAL_SDCard.obj"
+"./fatfs/ff.obj"
+"./fatfs/mmc.obj"
 "../lnk_msp430f5529.cmd"
 -llibmath.a
 -llibc.a

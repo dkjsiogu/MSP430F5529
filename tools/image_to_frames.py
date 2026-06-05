@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""把图片、GIF 或多张图片转换为 MSP430 墨水屏可直接使用的 1bpp 关键帧 C 数据。"""
+"""把图片、GIF 或文字转换为 MSP430 墨水屏可用的 C 数据或 SD 二进制资源。"""
 
 from __future__ import annotations
 
 import argparse
 import re
+import struct
 from collections import deque
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageSequence as PilImageSequence
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageSequence as PilImageSequence
 except Exception as exc:  # pragma: no cover - 运行环境缺依赖时给出明确错误
     raise SystemExit("需要安装 Pillow：python -m pip install pillow") from exc
 
@@ -31,6 +32,12 @@ BAYER8 = (
     (51, 19, 59, 27, 49, 17, 57, 25),
     (15, 47, 7, 39, 13, 45, 5, 37),
     (63, 31, 55, 23, 61, 29, 53, 21),
+)
+
+ASSET_INDEX_ENTRIES = (
+    (1, 1, "IMG/MASCOT.BIN"),
+    (1, 2, "IMG/HOURGLAS.BIN"),
+    (2, 1, "TEXT/FONT24.BIN"),
 )
 
 
@@ -396,6 +403,52 @@ def bytes_to_c_rows(data: bytes, indent: str = "    ") -> Iterable[str]:
         yield indent + ", ".join(f"0x{value:02X}u" for value in chunk) + ","
 
 
+def pack_images(
+    frames: Sequence[Image.Image],
+    width: int | None,
+    height: int | None,
+    threshold: int,
+    invert: bool,
+    mono_mode: str,
+    edge_threshold: int,
+    auto_contrast: bool,
+    sharpen: float,
+    gamma: float,
+    dither_size: int,
+    subject_base: float,
+    subject_shadow: float,
+    subject_saturation: float,
+    subject_min: float,
+    subject_max: float,
+    subject_edge: float,
+    subject_white: float,
+    subject_dark: float,
+    subject_mask_value: int,
+    subject_mask_saturation: int,
+    subject_mask_white: int,
+    subject_mask_grow: int,
+    subject_mask_shrink: int,
+    subject_core: int,
+    subject_alpha: int,
+) -> List[Tuple[int, int, int, bytes]]:
+    """按统一算法准备并打包图片帧，供 C 数组和 SD 二进制资源共用。"""
+    prepared = [
+        prepare_frame_for_pack(frame, width, height, mono_mode,
+                               subject_mask_value, subject_mask_saturation, subject_mask_white,
+                               subject_mask_grow, subject_mask_shrink)
+        for frame in frames
+    ]
+    return [
+        pack_frame(frame, threshold, invert,
+                   mono_mode, edge_threshold, auto_contrast, sharpen, gamma,
+                   dither_size, subject_base, subject_shadow, subject_saturation,
+                   subject_min, subject_max, subject_edge, subject_white, subject_dark,
+                   subject_mask_value, subject_mask_saturation, subject_mask_white,
+                   subject_mask_grow, subject_mask_shrink, subject_core, subject_alpha)
+        for frame in prepared
+    ]
+
+
 def write_c_file(
     output: Path,
     symbol: str,
@@ -432,28 +485,19 @@ def write_c_file(
 ) -> None:
     """生成单独的 C 资源文件，供工程直接编译进 Flash。"""
     symbol = c_identifier(symbol)
-    prepared = [
-        prepare_frame_for_pack(frame, width, height, mono_mode,
-                               subject_mask_value, subject_mask_saturation, subject_mask_white,
-                               subject_mask_grow, subject_mask_shrink)
-        for frame in frames
-    ]
-    packed = [
-        pack_frame(frame, threshold, invert,
-                   mono_mode, edge_threshold, auto_contrast, sharpen, gamma,
-                   dither_size, subject_base, subject_shadow, subject_saturation,
-                   subject_min, subject_max, subject_edge, subject_white, subject_dark,
-                   subject_mask_value, subject_mask_saturation, subject_mask_white,
-                   subject_mask_grow, subject_mask_shrink, subject_core, subject_alpha)
-        for frame in prepared
-    ]
+    packed = pack_images(frames, width, height, threshold, invert, mono_mode,
+                         edge_threshold, auto_contrast, sharpen, gamma, dither_size,
+                         subject_base, subject_shadow, subject_saturation, subject_min,
+                         subject_max, subject_edge, subject_white, subject_dark,
+                         subject_mask_value, subject_mask_saturation, subject_mask_white,
+                         subject_mask_grow, subject_mask_shrink, subject_core, subject_alpha)
     header: List[str] = [
         "/*",
         f" * {output.name}",
         " * 由 tools/image_to_frames.py 自动生成的图片关键帧数据。",
         " * const 数据默认进入 MSP430 程序 Flash，渲染层按帧号读取并贴到帧缓冲。",
         " */",
-        '#include "image_frames.h"',
+        '#include "image_types.h"',
         "",
     ]
     lines: List[str] = []
@@ -483,10 +527,175 @@ def write_c_file(
         output.write_text("\n".join(header + lines), encoding="utf-8")
 
 
+def write_binary_file(
+    output: Path,
+    frames: Sequence[Image.Image],
+    width: int | None,
+    height: int | None,
+    threshold: int,
+    invert: bool,
+    mono_mode: str,
+    edge_threshold: int,
+    auto_contrast: bool,
+    sharpen: float,
+    gamma: float,
+    dither_size: int,
+    subject_base: float,
+    subject_shadow: float,
+    subject_saturation: float,
+    subject_min: float,
+    subject_max: float,
+    subject_edge: float,
+    subject_white: float,
+    subject_dark: float,
+    subject_mask_value: int,
+    subject_mask_saturation: int,
+    subject_mask_white: int,
+    subject_mask_grow: int,
+    subject_mask_shrink: int,
+    subject_core: int,
+    subject_alpha: int,
+    default_x: int,
+    default_y: int,
+    default_scale: int,
+) -> None:
+    """生成可直接放到 FAT32 SD 卡根目录的二进制帧资源。"""
+    packed = pack_images(frames, width, height, threshold, invert, mono_mode,
+                         edge_threshold, auto_contrast, sharpen, gamma, dither_size,
+                         subject_base, subject_shadow, subject_saturation, subject_min,
+                         subject_max, subject_edge, subject_white, subject_dark,
+                         subject_mask_value, subject_mask_saturation, subject_mask_white,
+                         subject_mask_grow, subject_mask_shrink, subject_core, subject_alpha)
+    if not packed:
+        raise SystemExit("没有可写入 SD 资源文件的帧。")
+
+    frame_w, frame_h, stride, first_data = packed[0]
+    frame_bytes = stride * frame_h
+    if frame_bytes > 0xFFFF:
+        raise SystemExit("单帧数据超过 65535 字节，当前 MSP430 读取格式不支持。")
+    if len(packed) > 255:
+        raise SystemExit("帧数超过 255，当前 MSP430 读取格式不支持。")
+    for w, h, row_stride, data in packed:
+        if w != frame_w or h != frame_h or row_stride != stride or len(data) != frame_bytes:
+            raise SystemExit("所有帧必须具有相同尺寸和 stride。")
+
+    header = struct.pack(
+        "<4sHHHHHBBhhHH",
+        b"SIMG",
+        1,
+        24,
+        frame_w,
+        frame_h,
+        stride,
+        len(packed),
+        max(1, min(default_scale, 8)),
+        default_x,
+        default_y,
+        frame_bytes,
+        0,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("wb") as f:
+        f.write(header)
+        f.write(first_data)
+        for _w, _h, _stride, data in packed[1:]:
+            f.write(data)
+
+
+def draw_glyph_bitmap(char: str, font_path: Path, font_size: int, width: int, height: int,
+                      threshold: int, x_offset: int, y_offset: int) -> bytes:
+    """把一个字符渲染成固定尺寸 1bpp 点阵，bit=1 表示黑色。"""
+    font = ImageFont.truetype(str(font_path), font_size)
+    canvas = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(canvas)
+    bbox = draw.textbbox((0, 0), char, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    x = (width - text_w) // 2 - bbox[0] + x_offset
+    y = (height - text_h) // 2 - bbox[1] + y_offset
+    draw.text((x, y), char, font=font, fill=0)
+
+    stride = (width + 7) // 8
+    out = bytearray(stride * height)
+    pixels = canvas.load()
+    for py in range(height):
+        for px in range(width):
+            if pixels[px, py] < threshold:
+                out[py * stride + (px // 8)] |= 0x80 >> (px & 7)
+    return bytes(out)
+
+
+def write_font_binary(output: Path, chars: str, font_path: Path, font_size: int,
+                      width: int, height: int, threshold: int,
+                      x_offset: int, y_offset: int) -> None:
+    """生成 SD 卡 TEXT 字库资源，格式为 SFNT + 字形索引 + 连续点阵数据。"""
+    if not chars:
+        raise SystemExit("请通过 --font-chars 指定至少一个字。")
+    if width <= 0 or height <= 0:
+        raise SystemExit("字形宽高必须大于 0。")
+
+    stride = (width + 7) // 8
+    if stride > 32:
+        raise SystemExit("字形单行超过 32 字节，当前 MSP430 行缓冲不支持。")
+    glyphs = []
+    seen = set()
+    for char in chars:
+        codepoint = ord(char)
+        if codepoint in seen:
+            continue
+        seen.add(codepoint)
+        data = draw_glyph_bitmap(char, font_path, font_size, width, height,
+                                 threshold, x_offset, y_offset)
+        glyphs.append((codepoint, data))
+    if len(glyphs) > 255:
+        raise SystemExit("当前字库生成脚本限制最多 255 个字形。")
+
+    header_size = 16
+    entry_size = 8
+    data_offset = header_size + len(glyphs) * entry_size
+    entries = bytearray()
+    payload = bytearray()
+    for codepoint, data in glyphs:
+        if data_offset > 0xFFFF or len(data) > 0xFFFF:
+            raise SystemExit("字库文件超过当前 16 位偏移格式可表示范围。")
+        entries += struct.pack("<HHHH", codepoint, data_offset, len(data), 0)
+        payload += data
+        data_offset += len(data)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("wb") as f:
+        f.write(struct.pack("<4sHHHHH", b"SFNT", 1, header_size, width, height, stride))
+        f.write(struct.pack("<H", len(glyphs)))
+        f.write(entries)
+        f.write(payload)
+
+
+def write_asset_index(output: Path) -> None:
+    """生成 SD 卡根目录 ASSET.IDX，固件按这个表定位 IMG 和 TEXT 资源。"""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("wb") as f:
+        f.write(struct.pack("<4sHH", b"AIDX", 1, len(ASSET_INDEX_ENTRIES)))
+        for resource_type, resource_id, path in ASSET_INDEX_ENTRIES:
+            encoded = path.encode("ascii")
+            if len(encoded) >= 20:
+                raise SystemExit(f"索引路径过长：{path}")
+            f.write(struct.pack("<BBH", resource_type, resource_id, 0))
+            f.write(encoded + b"\0" * (20 - len(encoded)))
+
+
+def build_sd_layout(output_dir: Path) -> None:
+    """创建固件约定的 SD 卡目录结构和根索引文件。"""
+    (output_dir / "IMG").mkdir(parents=True, exist_ok=True)
+    (output_dir / "TEXT").mkdir(parents=True, exist_ok=True)
+    write_asset_index(output_dir / "ASSET.IDX")
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="把图片/GIF 转成 MSP430 墨水屏 1bpp 关键帧 C 数据。")
+    parser = argparse.ArgumentParser(description="把图片/GIF 转成 MSP430 墨水屏 1bpp 关键帧 C 数据或 SD 二进制资源。")
     parser.add_argument("images", nargs="*", type=Path, help="输入图片路径；GIF 会按帧展开。")
-    parser.add_argument("-o", "--output", type=Path, default=Path("image_frames.c"), help="输出 C 文件路径。")
+    parser.add_argument("-o", "--output", type=Path, help="输出 C 资源文件路径；当前工程默认使用 SD 二进制资源。")
+    parser.add_argument("--binary-output", type=Path, help="输出 SD 卡二进制资源文件路径，例如 MASCOT.BIN。")
+    parser.add_argument("--only-binary", action="store_true", help="只生成 SD 卡二进制资源，不改写 C 资源文件。")
     parser.add_argument("--symbol", default="g_hourglass_sequence", help="生成的 ImageSequence 符号名。")
     parser.add_argument("--width", type=int, help="输出帧宽度；只给宽度时保持比例。")
     parser.add_argument("--height", type=int, help="输出帧高度；只给高度时保持比例。")
@@ -520,12 +729,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--y", type=int, default=0, help="资源记录的默认 Y 坐标。")
     parser.add_argument("--scale", type=int, default=1, help="资源记录的默认整数缩放倍数。")
     parser.add_argument("--demo-hourglass", action="store_true", help="生成内置沙漏演示帧，不读取输入图片。")
-    parser.add_argument("--append", action="store_true", help="追加到已有 C 文件，用于把多个图片序列统一放进 image_frames.c。")
+    parser.add_argument("--append", action="store_true", help="追加到已有 C 文件，用于把多个图片序列统一放进同一个资源文件。")
+    parser.add_argument("--font-output", type=Path, help="输出 SD 卡 SFNT 字库资源，例如 sdcard/TEXT/FONT24.BIN。")
+    parser.add_argument("--font-chars", default="", help="要打包进 SFNT 字库的字符，例如 郑。")
+    parser.add_argument("--font-path", type=Path, default=Path(r"C:\Windows\Fonts\msyh.ttc"), help="用于生成点阵的 TrueType/OpenType 字体路径。")
+    parser.add_argument("--font-size", type=int, default=25, help="字库生成使用的字体字号。")
+    parser.add_argument("--font-width", type=int, default=24, help="字形输出宽度。")
+    parser.add_argument("--font-height", type=int, default=24, help="字形输出高度。")
+    parser.add_argument("--font-threshold", type=int, default=150, help="字形灰度阈值，小于阈值视为黑色。")
+    parser.add_argument("--font-x-offset", type=int, default=0, help="字形水平微调偏移。")
+    parser.add_argument("--font-y-offset", type=int, default=0, help="字形垂直微调偏移。")
+    parser.add_argument("--asset-index-output", type=Path, help="输出 SD 卡 ASSET.IDX 根索引。")
+    parser.add_argument("--prepare-sd-layout", type=Path, help="创建 SD 卡资源目录并写入 ASSET.IDX。")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    did_output = False
+    if args.prepare_sd_layout:
+        build_sd_layout(args.prepare_sd_layout)
+        did_output = True
+    if args.asset_index_output:
+        write_asset_index(args.asset_index_output)
+        did_output = True
+    if args.font_output:
+        write_font_binary(
+            args.font_output,
+            args.font_chars,
+            args.font_path,
+            args.font_size,
+            args.font_width,
+            args.font_height,
+            args.font_threshold,
+            args.font_x_offset,
+            args.font_y_offset,
+        )
+        did_output = True
+    if did_output and not (args.images or args.demo_hourglass or args.binary_output or not args.only_binary):
+        return
+    if did_output and not args.images and not args.demo_hourglass and not args.binary_output:
+        return
     if args.frame_step <= 0:
         raise SystemExit("--frame-step 必须大于 0")
     if args.demo_hourglass:
@@ -542,40 +786,75 @@ def main() -> None:
         height = args.height
     if not frames:
         raise SystemExit("没有可输出的图片帧。")
-    write_c_file(
-        args.output,
-        args.symbol,
-        frames,
-        width,
-        height,
-        args.threshold,
-        args.invert,
-        args.mono_mode,
-        args.edge_threshold,
-        args.auto_contrast,
-        args.sharpen,
-        args.gamma,
-        args.dither_size,
-        args.subject_base,
-        args.subject_shadow,
-        args.subject_saturation,
-        args.subject_min,
-        args.subject_max,
-        args.subject_edge,
-        args.subject_white,
-        args.subject_dark,
-        args.subject_mask_value,
-        args.subject_mask_saturation,
-        args.subject_mask_white,
-        args.subject_mask_grow,
-        args.subject_mask_shrink,
-        args.subject_core,
-        args.subject_alpha,
-        args.x,
-        args.y,
-        args.scale,
-        args.append,
-    )
+    if args.binary_output:
+        write_binary_file(
+            args.binary_output,
+            frames,
+            width,
+            height,
+            args.threshold,
+            args.invert,
+            args.mono_mode,
+            args.edge_threshold,
+            args.auto_contrast,
+            args.sharpen,
+            args.gamma,
+            args.dither_size,
+            args.subject_base,
+            args.subject_shadow,
+            args.subject_saturation,
+            args.subject_min,
+            args.subject_max,
+            args.subject_edge,
+            args.subject_white,
+            args.subject_dark,
+            args.subject_mask_value,
+            args.subject_mask_saturation,
+            args.subject_mask_white,
+            args.subject_mask_grow,
+            args.subject_mask_shrink,
+            args.subject_core,
+            args.subject_alpha,
+            args.x,
+            args.y,
+            args.scale,
+        )
+
+    if args.output and not args.only_binary:
+        write_c_file(
+            args.output,
+            args.symbol,
+            frames,
+            width,
+            height,
+            args.threshold,
+            args.invert,
+            args.mono_mode,
+            args.edge_threshold,
+            args.auto_contrast,
+            args.sharpen,
+            args.gamma,
+            args.dither_size,
+            args.subject_base,
+            args.subject_shadow,
+            args.subject_saturation,
+            args.subject_min,
+            args.subject_max,
+            args.subject_edge,
+            args.subject_white,
+            args.subject_dark,
+            args.subject_mask_value,
+            args.subject_mask_saturation,
+            args.subject_mask_white,
+            args.subject_mask_grow,
+            args.subject_mask_shrink,
+            args.subject_core,
+            args.subject_alpha,
+            args.x,
+            args.y,
+            args.scale,
+            args.append,
+        )
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@
 - 温度采集：采集 MSP430 片内 DIE 温度、NTC 温度和 TMP421 本地温度。
 - 墨水屏显示：显示当前温度、报警阈值、报警状态、设置界面和历史记录。
 - 历史记录：温度样本保存到片内 Flash，可按设置限制存储条数。
+- SD 卡资源：支持 32GB FAT32 SDHC 卡读写，图片和字库放在 `IMG/`、`TEXT/` 目录并由 `ASSET.IDX` 索引。
 - 参数设置：通过 S1-S4 按键设置采样间隔、报警阈值、存储条数和报警时长。
 - 蜂鸣器报警：温度超过阈值后，通过 P3.6 输出方波驱动无源蜂鸣器。
 - 低功耗等待：主循环空闲时进入 LPM0，由采样定时器、按键中断或串口接收唤醒。
@@ -18,7 +19,7 @@
 - 语言：C
 - 显示：SSD1673 墨水屏驱动，软件 SPI
 - 传感器：MSP430 片内温度传感器、NTC ADC、TMP421 I2C
-- 存储：MSP430 片内 Flash
+- 存储：MSP430 片内 Flash、FatFs FAT32 SD 卡
 - 交互：Pocket Kit S1-S4 按键、UART 接收命令
 - 报警：P3.6 PWM/方波驱动无源蜂鸣器
 
@@ -35,9 +36,13 @@
 ├── sensors.c/.h           DIE、NTC、TMP421 温度采集
 ├── epaper.c/.h            墨水屏驱动和页面渲染
 ├── flash_log.c/.h         温度历史记录 Flash 存取
+├── sd_assets.c/.h         FAT32 SD 卡索引、图片和字库资源加载
+├── fatfs/                 Pocket Kit SD SPI 适配后的 FatFs 文件系统
 ├── serial_control.c/.h    串口接收命令处理
 ├── uart.c/.h              UART1 接收中断封装
 ├── format.c/.h            小型字符串格式化工具
+├── tools/                 图片/GIF 到墨水屏帧资源的转换脚本
+├── sdcard/                可直接复制到 SD 卡根目录的示例资源
 ├── lnk_msp430f5529.cmd    MSP430F5529 链接脚本
 └── targetConfigs/         CCS 目标配置
 ```
@@ -46,6 +51,8 @@
 
 主界面：
 
+- S1：进入全屏 GIF 播放页面，读取 SD 卡 `IMG/MASCOT.BIN`。
+- S2：进入历史记录滚动播放页面。
 - S3：进入设置界面。
 - S4：手动执行一次全屏刷新。
 
@@ -68,6 +75,7 @@
 - `ALM TEMP`：报警温度阈值。
 - `STORE`：历史数据存储条数。
 - `ALM TIME`：报警鸣叫时长。
+- `HOURGLASS`：沙漏动画周期和 TMP 平均温度统计窗口。
 
 ## 硬件连接
 
@@ -77,8 +85,39 @@
 - S4：P2.6，内部上拉，按下为低电平。
 - 蜂鸣器：P3.6 输出方波。无源蜂鸣器需要按 Pocket Kit 文档连接跳线，将 3 和 5 相连、4 和 6 相连。
 - 墨水屏：使用 P1.4、P2.2、P2.7、P3.2、P3.3、P3.4。
+- SD 卡：使用 UCB1 SPI，P4.0 为 CS，P4.1 为 SIMO，P4.2 为 SOMI，P4.3 为 CLK。
 - NTC：P6.5 / A5。
 - TMP421：I2C 连接，程序会检测 TMP421 地址。
+
+## SD 卡资源
+
+工程已经接入 ChaN FatFs R0.08b，并把底层初始化改成 SDv2/SDHC 需要的 `CMD8 + ACMD41(HCS) + CMD58` 流程，因此 32GB FAT32 卡可以按块地址读写。
+
+使用方式：
+
+- 将 `sdcard` 目录下的 `ASSET.IDX`、`IMG`、`TEXT` 复制到 FAT32 SD 卡根目录。
+- 插入 SD 卡后烧录程序，主界面沙漏、`郑` 字和 S1 GIF 页面都会从 SD 卡读取资源。
+- GIF 页面左上角显示 `SD` 表示当前帧来自 SD 卡；如果 SD 卡或文件不可用，会显示 `NO SD`。
+- 图片和文字资源不再编译进片内 Flash，Flash 主要保存程序和应用参数。
+- 串口发送 `w` 会在 SD 卡根目录创建或追加 `SDTEST.TXT`，用于验证 FAT32 写入路径。
+
+SD 卡目录约定：
+
+```text
+ASSET.IDX              根资源索引
+IMG/MASCOT.BIN         S1 全屏 GIF 帧资源
+IMG/HOURGLAS.BIN       主界面沙漏帧资源，8.3 文件名
+TEXT/FONT24.BIN        24x24 点阵字库，目前包含“郑”
+```
+
+重新生成 SD 图片资源示例：
+
+```powershell
+python tools\image_to_frames.py --prepare-sd-layout sdcard --only-binary
+python tools\image_to_frames.py C:\Users\Administrator\Downloads\500000002.gif --binary-output sdcard\IMG\MASCOT.BIN --only-binary --width 150 --height 122 --max-frames 6 --mono-mode subject
+python tools\image_to_frames.py --demo-hourglass --binary-output sdcard\IMG\HOURGLAS.BIN --only-binary --width 48 --height 66 --x 198 --y 12 --max-frames 12
+python tools\image_to_frames.py --font-output sdcard\TEXT\FONT24.BIN --font-chars 郑 --only-binary
+```
 
 ## 构建方式
 
