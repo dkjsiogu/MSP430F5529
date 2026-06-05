@@ -13,6 +13,11 @@ void epd_show_current_auto(const TempSample *s);           /* 提交最新温度
 void epd_show_history_page(uint16_t start);                /* 提交从指定记录序号开始的历史页画面。 */
 void epd_show_history_playback(void);                      /* 进入 Flash 历史记录自动滚动播放页。 */
 void epd_show_gif_playback(void);                          /* 进入全屏 GIF 动画播放页，并按固定帧率循环刷新。 */
+void epd_gif_prev_asset(void);                             /* GIF 页面切换到上一个可用 SD 动图资源。 */
+void epd_gif_next_asset(void);                             /* GIF 页面切换到下一个可用 SD 动图资源。 */
+void epd_show_text_reader(void);                           /* 进入 SD 卡 BOOK.TXT 阅读页。 */
+void epd_text_prev_page(void);                             /* 阅读页切换到上一页文本。 */
+void epd_text_next_page(void);                             /* 阅读页切换到下一页文本。 */
 void epd_show_settings_page(uint8_t selected, uint8_t editing); /* 提交设置页画面，selected 为当前项目，editing 表示正在改值。 */
 void epd_render_task(void);                                /* 通过局部刷新渲染一个待处理的整屏目标画面。 */
 uint8_t epd_render_pending(void);                          /* 返回当前是否还有待渲染画面。 */

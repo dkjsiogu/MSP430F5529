@@ -7,7 +7,7 @@
 - 温度采集：采集 MSP430 片内 DIE 温度、NTC 温度和 TMP421 本地温度。
 - 墨水屏显示：显示当前温度、报警阈值、报警状态、设置界面和历史记录。
 - 历史记录：温度样本保存到片内 Flash，可按设置限制存储条数。
-- SD 卡资源：支持 32GB FAT32 SDHC 卡读写，图片和字库放在 `IMG/`、`TEXT/` 目录并由 `ASSET.IDX` 索引。
+- SD 卡资源：支持 32GB FAT32 SDHC 卡读写，图片、字库和阅读文本放在 `IMG/`、`TEXT/` 目录并由 `ASSET.IDX` 索引。
 - 参数设置：通过 S1-S4 按键设置采样间隔、报警阈值、存储条数和报警时长。
 - 蜂鸣器报警：温度超过阈值后，通过 P3.6 输出方波驱动无源蜂鸣器。
 - 低功耗等待：主循环空闲时进入 LPM0，由采样定时器、按键中断或串口接收唤醒。
@@ -51,8 +51,8 @@
 
 主界面：
 
-- S1：进入全屏 GIF 播放页面，读取 SD 卡 `IMG/MASCOT.BIN`。
-- S2：进入历史记录滚动播放页面。
+- S1：进入全屏 GIF 播放页面，S1/S2 在该页面切换上一个/下一个动图。
+- S2：进入 SD 卡文本阅读页面，S1/S2 在该页面翻到上一页/下一页。
 - S3：进入设置界面。
 - S4：手动执行一次全屏刷新。
 
@@ -96,7 +96,7 @@
 使用方式：
 
 - 将 `sdcard` 目录下的 `ASSET.IDX`、`IMG`、`TEXT` 复制到 FAT32 SD 卡根目录。
-- 插入 SD 卡后烧录程序，主界面沙漏、`郑` 字和 S1 GIF 页面都会从 SD 卡读取资源。
+- 插入 SD 卡后烧录程序，主界面沙漏、`郑` 字、S1 GIF 页面和 S2 阅读页面都会从 SD 卡读取资源。
 - GIF 页面左上角显示 `SD` 表示当前帧来自 SD 卡；如果 SD 卡或文件不可用，会显示 `NO SD`。
 - 图片和文字资源不再编译进片内 Flash，Flash 主要保存程序和应用参数。
 - 串口发送 `w` 会在 SD 卡根目录创建或追加 `SDTEST.TXT`，用于验证 FAT32 写入路径。
@@ -107,7 +107,12 @@ SD 卡目录约定：
 ASSET.IDX              根资源索引
 IMG/MASCOT.BIN         S1 全屏 GIF 帧资源
 IMG/HOURGLAS.BIN       主界面沙漏帧资源，8.3 文件名
-TEXT/FONT24.BIN        24x24 点阵字库，目前包含“郑”
+IMG/GIF2.BIN           可选扩展动图，存在时会被写入索引并可在 GIF 页面翻页
+IMG/GIF3.BIN           可选扩展动图
+IMG/GIF4.BIN           可选扩展动图
+TEXT/FONT24.BIN        24x24 点阵字库，用于主界面“郑”
+TEXT/FONT16.BIN        16x16 点阵字库，用于阅读页
+TEXT/BOOK.TXT          UTF-8 小说文本，文件较大，不纳入 Git
 ```
 
 重新生成 SD 图片资源示例：
@@ -117,6 +122,8 @@ python tools\image_to_frames.py --prepare-sd-layout sdcard --only-binary
 python tools\image_to_frames.py C:\Users\Administrator\Downloads\500000002.gif --binary-output sdcard\IMG\MASCOT.BIN --only-binary --width 150 --height 122 --max-frames 6 --mono-mode subject
 python tools\image_to_frames.py --demo-hourglass --binary-output sdcard\IMG\HOURGLAS.BIN --only-binary --width 48 --height 66 --x 198 --y 12 --max-frames 12
 python tools\image_to_frames.py --font-output sdcard\TEXT\FONT24.BIN --font-chars 郑 --only-binary
+python tools\image_to_frames.py --text-input sdcard\TEXT\BOOK_SOURCE.TXT --text-output sdcard\TEXT\BOOK.TXT --only-binary
+python tools\image_to_frames.py --font-output sdcard\TEXT\FONT16.BIN --font-chars-file sdcard\TEXT\BOOK.TXT --font-width 16 --font-height 16 --font-size 17 --font-threshold 150 --font-direct-index --only-binary
 ```
 
 ## 构建方式

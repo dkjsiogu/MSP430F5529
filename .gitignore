@@ -26,3 +26,7 @@ Debug/.clangd/
 *.tmp
 *.bak
 *.log
+
+# Local SD text payloads
+sdcard/TEXT/BOOK.TXT
+sdcard/TEXT/BOOK_SOURCE.TXT

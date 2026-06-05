@@ -14,6 +14,7 @@
 #define BUTTON_MODE_SETTINGS_EDIT   2u   /* 设置界面参数编辑模式。 */
 #define BUTTON_MODE_HISTORY         3u   /* 历史记录播放界面按键模式。 */
 #define BUTTON_MODE_GIF             4u   /* 全屏 GIF 动画播放界面按键模式。 */
+#define BUTTON_MODE_TEXT            5u   /* SD 卡文本阅读界面按键模式。 */
 
 #define SETTINGS_ITEM_SAMPLE        0u   /* 设置项：定时采样间隔。 */
 #define SETTINGS_ITEM_ALARM_TEMP    1u   /* 设置项：报警温度阈值。 */
@@ -182,11 +183,11 @@ static void buttons_enter_settings(void)
     buttons_show_settings();
 }
 
-/* 从主界面进入 Flash 历史记录自动播放页面。 */
-static void buttons_enter_history(void)
+/* 从主界面进入 SD 卡文本阅读页面。 */
+static void buttons_enter_text(void)
 {
-    g_button_mode = BUTTON_MODE_HISTORY;
-    epd_show_history_playback();
+    g_button_mode = BUTTON_MODE_TEXT;
+    epd_show_text_reader();
 }
 
 /* 从主界面进入全屏 GIF 动画播放页面。 */
@@ -273,9 +274,12 @@ void buttons_action_s1(const TempSample *last_sample, uint8_t has_sample)
         (void)last_sample;
         (void)has_sample;
         buttons_enter_gif();
-    } else if (g_button_mode == BUTTON_MODE_HISTORY ||
-               g_button_mode == BUTTON_MODE_GIF) {
+    } else if (g_button_mode == BUTTON_MODE_HISTORY) {
         buttons_return_main();
+    } else if (g_button_mode == BUTTON_MODE_GIF) {
+        epd_gif_prev_asset();
+    } else if (g_button_mode == BUTTON_MODE_TEXT) {
+        epd_text_prev_page();
     } else if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {
         buttons_move_setting(-1);
     } else if (g_button_mode == BUTTON_MODE_SETTINGS_EDIT) {
@@ -291,7 +295,11 @@ void buttons_action_s2(const TempSample *last_sample, uint8_t has_sample)
     if (g_button_mode == BUTTON_MODE_MAIN) {
         (void)last_sample;
         (void)has_sample;
-        buttons_enter_history();
+        buttons_enter_text();
+    } else if (g_button_mode == BUTTON_MODE_GIF) {
+        epd_gif_next_asset();
+    } else if (g_button_mode == BUTTON_MODE_TEXT) {
+        epd_text_next_page();
     } else if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {
         buttons_move_setting(1);
     } else if (g_button_mode == BUTTON_MODE_SETTINGS_EDIT) {

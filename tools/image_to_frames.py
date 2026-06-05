@@ -38,6 +38,14 @@ ASSET_INDEX_ENTRIES = (
     (1, 1, "IMG/MASCOT.BIN"),
     (1, 2, "IMG/HOURGLAS.BIN"),
     (2, 1, "TEXT/FONT24.BIN"),
+    (2, 2, "TEXT/BOOK.TXT"),
+    (2, 3, "TEXT/FONT16.BIN"),
+)
+
+OPTIONAL_IMAGE_ENTRIES = (
+    (1, 3, "IMG/GIF2.BIN"),
+    (1, 4, "IMG/GIF3.BIN"),
+    (1, 5, "IMG/GIF4.BIN"),
 )
 
 
@@ -47,6 +55,28 @@ def c_identifier(value: str) -> str:
     if not ident or ident[0].isdigit():
         ident = "_" + ident
     return ident
+
+
+def read_text_auto(path: Path, encoding: str | None = None) -> str:
+    """读取文本文件，默认按 UTF-8、GB18030、GBK 依次尝试。"""
+    data = path.read_bytes()
+    encodings = [encoding] if encoding else ["utf-8-sig", "utf-8", "gb18030", "gbk"]
+    for enc in encodings:
+        if not enc:
+            continue
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode(encodings[-1] or "utf-8", errors="replace")
+
+
+def write_utf8_text(input_path: Path, output_path: Path, encoding: str | None = None) -> None:
+    """把外部小说文本转成固件统一读取的 UTF-8 BOOK.TXT。"""
+    text = read_text_auto(input_path, encoding)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def resize_frame(img: Image.Image, width: int | None, height: int | None) -> Image.Image:
@@ -627,8 +657,8 @@ def draw_glyph_bitmap(char: str, font_path: Path, font_size: int, width: int, he
 
 def write_font_binary(output: Path, chars: str, font_path: Path, font_size: int,
                       width: int, height: int, threshold: int,
-                      x_offset: int, y_offset: int) -> None:
-    """生成 SD 卡 TEXT 字库资源，格式为 SFNT + 字形索引 + 连续点阵数据。"""
+                      x_offset: int, y_offset: int, direct_index: bool) -> None:
+    """生成 SD 卡 TEXT 字库资源，支持小字库 V2 和直接索引 V3 两种 SFNT 格式。"""
     if not chars:
         raise SystemExit("请通过 --font-chars 指定至少一个字。")
     if width <= 0 or height <= 0:
@@ -639,43 +669,84 @@ def write_font_binary(output: Path, chars: str, font_path: Path, font_size: int,
         raise SystemExit("字形单行超过 32 字节，当前 MSP430 行缓冲不支持。")
     glyphs = []
     seen = set()
-    for char in chars:
+    for char in sorted(chars, key=ord):
         codepoint = ord(char)
+        if codepoint > 0xFFFF or codepoint < 32:
+            continue
         if codepoint in seen:
             continue
         seen.add(codepoint)
         data = draw_glyph_bitmap(char, font_path, font_size, width, height,
                                  threshold, x_offset, y_offset)
         glyphs.append((codepoint, data))
-    if len(glyphs) > 255:
-        raise SystemExit("当前字库生成脚本限制最多 255 个字形。")
-
-    header_size = 16
-    entry_size = 8
-    data_offset = header_size + len(glyphs) * entry_size
+    entry_size = 12
+    if direct_index:
+        header_size = 32
+        lookup_offset = header_size
+        entry_offset = lookup_offset + 65536 * 4
+        data_offset = entry_offset + len(glyphs) * entry_size
+    else:
+        header_size = 16
+        lookup_offset = 0
+        entry_offset = header_size
+        data_offset = entry_offset + len(glyphs) * entry_size
     entries = bytearray()
     payload = bytearray()
+    lookup = bytearray(b"\xFF\xFF\xFF\xFF" * 65536) if direct_index else bytearray()
+    current_entry_offset = entry_offset
     for codepoint, data in glyphs:
-        if data_offset > 0xFFFF or len(data) > 0xFFFF:
-            raise SystemExit("字库文件超过当前 16 位偏移格式可表示范围。")
-        entries += struct.pack("<HHHH", codepoint, data_offset, len(data), 0)
+        if data_offset > 0xFFFFFFFF or len(data) > 0xFFFF:
+            raise SystemExit("字库文件超过当前格式可表示范围。")
+        entries += struct.pack("<HHIHH", codepoint, 0, data_offset, len(data), 0)
+        if direct_index:
+            lookup[codepoint * 4 : codepoint * 4 + 4] = struct.pack("<I", current_entry_offset)
         payload += data
         data_offset += len(data)
+        current_entry_offset += entry_size
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("wb") as f:
-        f.write(struct.pack("<4sHHHHH", b"SFNT", 1, header_size, width, height, stride))
-        f.write(struct.pack("<H", len(glyphs)))
+        if direct_index:
+            f.write(struct.pack(
+                "<4sHHHHHHHIIIH",
+                b"SFNT",
+                3,
+                header_size,
+                width,
+                height,
+                stride,
+                len(glyphs),
+                entry_size,
+                lookup_offset,
+                entry_offset,
+                entry_offset + len(glyphs) * entry_size,
+                0,
+            ))
+            f.write(lookup)
+        else:
+            f.write(struct.pack("<4sHHHHH", b"SFNT", 2, header_size, width, height, stride))
+            f.write(struct.pack("<H", len(glyphs)))
         f.write(entries)
         f.write(payload)
 
 
-def write_asset_index(output: Path) -> None:
+def index_entries_for_root(root_dir: Path | None) -> list[tuple[int, int, str]]:
+    """生成资源索引条目；扩展 GIF 文件存在时才写入索引。"""
+    entries = list(ASSET_INDEX_ENTRIES)
+    if root_dir is not None:
+        for entry in OPTIONAL_IMAGE_ENTRIES:
+            if (root_dir / entry[2]).exists():
+                entries.append(entry)
+    return entries
+
+
+def write_asset_index(output: Path, root_dir: Path | None = None) -> None:
     """生成 SD 卡根目录 ASSET.IDX，固件按这个表定位 IMG 和 TEXT 资源。"""
+    entries = index_entries_for_root(root_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("wb") as f:
-        f.write(struct.pack("<4sHH", b"AIDX", 1, len(ASSET_INDEX_ENTRIES)))
-        for resource_type, resource_id, path in ASSET_INDEX_ENTRIES:
+        f.write(struct.pack("<4sHH", b"AIDX", 1, len(entries)))
+        for resource_type, resource_id, path in entries:
             encoded = path.encode("ascii")
             if len(encoded) >= 20:
                 raise SystemExit(f"索引路径过长：{path}")
@@ -687,7 +758,7 @@ def build_sd_layout(output_dir: Path) -> None:
     """创建固件约定的 SD 卡目录结构和根索引文件。"""
     (output_dir / "IMG").mkdir(parents=True, exist_ok=True)
     (output_dir / "TEXT").mkdir(parents=True, exist_ok=True)
-    write_asset_index(output_dir / "ASSET.IDX")
+    write_asset_index(output_dir / "ASSET.IDX", output_dir)
 
 
 def parse_args() -> argparse.Namespace:
@@ -732,6 +803,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--append", action="store_true", help="追加到已有 C 文件，用于把多个图片序列统一放进同一个资源文件。")
     parser.add_argument("--font-output", type=Path, help="输出 SD 卡 SFNT 字库资源，例如 sdcard/TEXT/FONT24.BIN。")
     parser.add_argument("--font-chars", default="", help="要打包进 SFNT 字库的字符，例如 郑。")
+    parser.add_argument("--font-chars-file", type=Path, help="从文本文件中收集需要打包进字库的字符。")
     parser.add_argument("--font-path", type=Path, default=Path(r"C:\Windows\Fonts\msyh.ttc"), help="用于生成点阵的 TrueType/OpenType 字体路径。")
     parser.add_argument("--font-size", type=int, default=25, help="字库生成使用的字体字号。")
     parser.add_argument("--font-width", type=int, default=24, help="字形输出宽度。")
@@ -739,8 +811,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--font-threshold", type=int, default=150, help="字形灰度阈值，小于阈值视为黑色。")
     parser.add_argument("--font-x-offset", type=int, default=0, help="字形水平微调偏移。")
     parser.add_argument("--font-y-offset", type=int, default=0, help="字形垂直微调偏移。")
+    parser.add_argument("--font-direct-index", action="store_true", help="为大字库生成 65536 项直接索引表，提高 MSP430 查字速度。")
     parser.add_argument("--asset-index-output", type=Path, help="输出 SD 卡 ASSET.IDX 根索引。")
     parser.add_argument("--prepare-sd-layout", type=Path, help="创建 SD 卡资源目录并写入 ASSET.IDX。")
+    parser.add_argument("--text-input", type=Path, help="外部小说文本路径，会自动识别常见中文编码。")
+    parser.add_argument("--text-output", type=Path, help="输出固件读取的 UTF-8 文本，例如 sdcard/TEXT/BOOK.TXT。")
+    parser.add_argument("--text-encoding", help="外部小说文本的编码；不指定时自动尝试 UTF-8/GB18030/GBK。")
     return parser.parse_args()
 
 
@@ -753,10 +829,16 @@ def main() -> None:
     if args.asset_index_output:
         write_asset_index(args.asset_index_output)
         did_output = True
+    if args.text_input and args.text_output:
+        write_utf8_text(args.text_input, args.text_output, args.text_encoding)
+        did_output = True
     if args.font_output:
+        font_chars = args.font_chars
+        if args.font_chars_file:
+            font_chars += read_text_auto(args.font_chars_file, "utf-8")
         write_font_binary(
             args.font_output,
-            args.font_chars,
+            font_chars,
             args.font_path,
             args.font_size,
             args.font_width,
@@ -764,6 +846,7 @@ def main() -> None:
             args.font_threshold,
             args.font_x_offset,
             args.font_y_offset,
+            args.font_direct_index,
         )
         did_output = True
     if did_output and not (args.images or args.demo_hourglass or args.binary_output or not args.only_binary):
