@@ -15,50 +15,54 @@ static freertos::StaticThread<application::tasks::display_stack_words,
 static freertos::StaticThread<application::tasks::flash_stack_words,
                               application::tasks::flash_priority> flash_thread;
 
-enum ApplicationThreadId {
-    control_thread_id,
-    sample_thread_id,
-    display_thread_id,
-    flash_thread_id
+struct ControlThreadSlot {
+    static freertos::Thread &thread()
+    {
+        return control_thread;
+    }
 };
 
-/* 将编译期线程编号映射到实际线程对象，供通知模板生成 C 回调函数。 */
-template<ApplicationThreadId ThreadId>
-static freertos::Thread &application_thread()
-{
-    switch (ThreadId) {
-    case control_thread_id:
-        return control_thread;
-    case sample_thread_id:
+struct SampleThreadSlot {
+    static freertos::Thread &thread()
+    {
         return sample_thread;
-    case display_thread_id:
+    }
+};
+
+struct DisplayThreadSlot {
+    static freertos::Thread &thread()
+    {
         return display_thread;
-    case flash_thread_id:
+    }
+};
+
+struct FlashThreadSlot {
+    static freertos::Thread &thread()
+    {
         return flash_thread;
     }
-    return control_thread;
-}
+};
 
-/* 普通任务上下文使用的线程通知回调模板。 */
-template<ApplicationThreadId ThreadId>
+/* 线程通知模板：Slot 暴露具体线程对象，模板生成可传给 C 模块的无参回调。 */
+template<class Slot>
 static void notify_thread()
 {
-    application_thread<ThreadId>().notify();
+    Slot::thread().notify();
 }
 
-/* ISR 上下文使用的线程通知回调模板。 */
-template<ApplicationThreadId ThreadId>
+/* ISR 线程通知模板：中断里使用 ISR-safe 的 FreeRTOS 通知接口。 */
+template<class Slot>
 static void notify_thread_from_isr()
 {
-    application_thread<ThreadId>().notify_from_isr();
+    Slot::thread().notify_from_isr();
 }
 
 int main()
 {
     application::tasks::Notifications task_notifications = {
-        notify_thread<sample_thread_id>,
-        notify_thread<display_thread_id>,
-        notify_thread<flash_thread_id>
+        notify_thread<SampleThreadSlot>,
+        notify_thread<DisplayThreadSlot>,
+        notify_thread<FlashThreadSlot>
     };
 
     WDTCTL = WDTPW | WDTHOLD;
@@ -81,9 +85,9 @@ int main()
 
     application::tasks::bind_notifications(task_notifications);
     board_set_delay_hook(application::tasks::delay_ms);
-    buttons_set_wake_hook(notify_thread_from_isr<control_thread_id>);
-    uart_set_rx_hook(notify_thread_from_isr<control_thread_id>);
-    sample_timer_set_due_hook(notify_thread_from_isr<sample_thread_id>);
+    buttons_set_wake_hook(notify_thread_from_isr<ControlThreadSlot>);
+    uart_set_rx_hook(notify_thread_from_isr<ControlThreadSlot>);
+    sample_timer_set_due_hook(notify_thread_from_isr<SampleThreadSlot>);
     serial_control_set_flash_erase_handler(application::tasks::request_flash_erase);
 
     vTaskStartScheduler();

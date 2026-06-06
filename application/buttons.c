@@ -3,12 +3,32 @@
 #include "app_state.h"
 #include "app_resources.h"
 #include "board.h"
+#include "captouch.h"
 #include "epaper.h"
 
-#define BUTTON_EVENT_S1             0x01u /* S1 按键按下事件标志。 */
-#define BUTTON_EVENT_S2             0x02u /* S2 按键按下事件标志。 */
-#define BUTTON_EVENT_S3             0x04u /* S3 按键按下事件标志。 */
-#define BUTTON_EVENT_S4             0x08u /* S4 按键按下事件标志。 */
+typedef enum {
+    BUTTON_ACTION_PRIMARY = 0u,     /* 主动作：主界面进 GIF，子页面向前/增加，S1 和 Pad1 触发。 */
+    BUTTON_ACTION_SECONDARY,        /* 次动作：主界面进文本，子页面向后/减少，S2 和 Pad2 触发。 */
+    BUTTON_ACTION_BACK,             /* 返回动作：进入设置或返回主界面，S3 触发。 */
+    BUTTON_ACTION_CONFIRM,          /* 确认动作：确认设置或手动刷新，S4 触发。 */
+    BUTTON_ACTION_COUNT             /* 语义动作数量。 */
+} ButtonAction;
+
+typedef enum {
+    BUTTON_INPUT_GPIO_PORT1 = 0u,   /* P1 端口上的普通机械按键输入。 */
+    BUTTON_INPUT_GPIO_PORT2,        /* P2 端口上的普通机械按键输入。 */
+    BUTTON_INPUT_TOUCH              /* Comparator B 电容触摸输入。 */
+} ButtonInputKind;
+
+typedef struct {
+    ButtonInputKind kind;           /* 输入源类型。 */
+    uint8_t id;                     /* GPIO 位或触摸通道编号。 */
+    ButtonAction action;            /* 该输入源触发的应用语义动作。 */
+} ButtonInputBinding;
+
+typedef void (*ButtonActionHandler)(const TempSample *last_sample, uint8_t has_sample);
+
+#define BUTTON_ACTION_BIT(action)   ((uint8_t)(1u << (uint8_t)(action))) /* 把语义动作编号转换成待处理位。 */
 
 #define BUTTON_MODE_MAIN            0u   /* 主温度界面按键模式。 */
 #define BUTTON_MODE_SETTINGS_SELECT 1u   /* 设置界面参数选择模式。 */
@@ -24,41 +44,122 @@
 #define SETTINGS_ITEM_HOURGLASS     4u   /* 设置项：沙漏动画周期和 TMP 平均温度窗口。 */
 #define SETTINGS_ITEM_COUNT         5u   /* 设置项总数，用于选择项循环。 */
 
-#define BUTTON1_BITS                (BUTTON_S1_BIT | BUTTON_S2_BIT) /* P1 端口上 S1/S2 的位掩码。 */
-#define BUTTON2_BITS                (BUTTON_S3_BIT | BUTTON_S4_BIT) /* P2 端口上 S3/S4 的位掩码。 */
+static const ButtonInputBinding g_button_input_bindings[] = {
+    { BUTTON_INPUT_GPIO_PORT1, BUTTON_S1_BIT, BUTTON_ACTION_PRIMARY },
+    { BUTTON_INPUT_TOUCH, CAP_TOUCH_PAD1_CHANNEL, BUTTON_ACTION_PRIMARY },
+    { BUTTON_INPUT_GPIO_PORT1, BUTTON_S2_BIT, BUTTON_ACTION_SECONDARY },
+    { BUTTON_INPUT_TOUCH, CAP_TOUCH_PAD2_CHANNEL, BUTTON_ACTION_SECONDARY },
+    { BUTTON_INPUT_GPIO_PORT2, BUTTON_S3_BIT, BUTTON_ACTION_BACK },
+    { BUTTON_INPUT_GPIO_PORT2, BUTTON_S4_BIT, BUTTON_ACTION_CONFIRM }
+};
 
-static volatile uint8_t g_button1_irq_bits = 0;
-static volatile uint8_t g_button2_irq_bits = 0;
-static uint8_t g_button1_last_pressed = 0;
-static uint8_t g_button2_last_pressed = 0;
-static uint8_t g_button_guard_seen = 0;
-static uint16_t g_button_s1_last_tick = 0;
-static uint16_t g_button_s2_last_tick = 0;
-static uint16_t g_button_s3_last_tick = 0;
-static uint16_t g_button_s4_last_tick = 0;
+#define BUTTON_INPUT_BINDING_COUNT  ((uint8_t)(sizeof(g_button_input_bindings) / sizeof(g_button_input_bindings[0])))
+#define BUTTON_GPIO_PORT_COUNT      2u
+#define BUTTON_TOUCH_BIT(channel)   ((uint8_t)(1u << (uint8_t)(channel)))
+
+static volatile uint8_t g_button_irq_bits[BUTTON_GPIO_PORT_COUNT] = {0, 0};
+static uint8_t g_button_gpio_mask[BUTTON_GPIO_PORT_COUNT] = {0, 0};
+static uint8_t g_button_last_pressed[BUTTON_GPIO_PORT_COUNT] = {0, 0};
+static uint8_t g_touch_last_pressed = 0;
+static uint8_t g_button_action_guard_seen = 0;
+static uint16_t g_button_action_last_tick[BUTTON_ACTION_COUNT];
 static uint8_t g_button_mode = BUTTON_MODE_MAIN;
 static uint8_t g_settings_item = SETTINGS_ITEM_SAMPLE;
 static ButtonsIsrWakeHook g_buttons_wake_hook = 0;
 
+/* 从输入映射表预计算两个 GPIO 端口的机械按键位掩码。 */
+static void buttons_build_gpio_masks(void)
+{
+    uint8_t i;
+
+    g_button_gpio_mask[BUTTON_INPUT_GPIO_PORT1] = 0;
+    g_button_gpio_mask[BUTTON_INPUT_GPIO_PORT2] = 0;
+    for (i = 0; i < BUTTON_INPUT_BINDING_COUNT; i++) {
+        if (g_button_input_bindings[i].kind == BUTTON_INPUT_GPIO_PORT1 ||
+            g_button_input_bindings[i].kind == BUTTON_INPUT_GPIO_PORT2) {
+            g_button_gpio_mask[g_button_input_bindings[i].kind] |= g_button_input_bindings[i].id;
+        }
+    }
+}
+
+/* 返回某个 GPIO 输入端口的机械按键位掩码。 */
+static uint8_t buttons_gpio_port_mask(ButtonInputKind kind)
+{
+    if (kind == BUTTON_INPUT_GPIO_PORT1 || kind == BUTTON_INPUT_GPIO_PORT2) {
+        return g_button_gpio_mask[kind];
+    }
+    return 0;
+}
+
+/* 读取指定 GPIO 输入端口的稳定低电平按下状态。 */
+static uint8_t buttons_read_gpio_pressed(ButtonInputKind kind)
+{
+    uint8_t mask;
+
+    mask = buttons_gpio_port_mask(kind);
+    if (kind == BUTTON_INPUT_GPIO_PORT1) {
+        return (uint8_t)((~BUTTON_PORT_IN) & mask);
+    }
+    if (kind == BUTTON_INPUT_GPIO_PORT2) {
+        return (uint8_t)((~BUTTON2_PORT_IN) & mask);
+    }
+    return 0;
+}
+
+/* 按输入映射表初始化一个 GPIO 端口的上拉和下降沿中断。 */
+static void buttons_init_gpio_port(ButtonInputKind kind)
+{
+    uint8_t mask;
+
+    mask = buttons_gpio_port_mask(kind);
+    if (mask == 0) {
+        return;
+    }
+
+    if (kind == BUTTON_INPUT_GPIO_PORT1) {
+        BUTTON_PORT_SEL &= ~mask;
+        BUTTON_PORT_DIR &= ~mask;
+        BUTTON_PORT_OUT |= mask;
+        BUTTON_PORT_REN |= mask;
+        BUTTON_PORT_IES |= mask;
+        BUTTON_PORT_IFG &= ~mask;
+        BUTTON_PORT_IE |= mask;
+    } else if (kind == BUTTON_INPUT_GPIO_PORT2) {
+        BUTTON2_PORT_SEL &= ~mask;
+        BUTTON2_PORT_DIR &= ~mask;
+        BUTTON2_PORT_OUT |= mask;
+        BUTTON2_PORT_REN |= mask;
+        BUTTON2_PORT_IES |= mask;
+        BUTTON2_PORT_IFG &= ~mask;
+        BUTTON2_PORT_IE |= mask;
+    }
+}
+
+/* 重新打开指定 GPIO 输入端口的中断，供去抖完成后恢复边沿触发。 */
+static void buttons_rearm_gpio_port(ButtonInputKind kind)
+{
+    uint8_t mask;
+
+    mask = buttons_gpio_port_mask(kind);
+    if (mask == 0) {
+        return;
+    }
+
+    if (kind == BUTTON_INPUT_GPIO_PORT1) {
+        BUTTON_PORT_IFG &= ~mask;
+        BUTTON_PORT_IE |= mask;
+    } else if (kind == BUTTON_INPUT_GPIO_PORT2) {
+        BUTTON2_PORT_IFG &= ~mask;
+        BUTTON2_PORT_IE |= mask;
+    }
+}
+
 void buttons_init(void)
 {
-    BUTTON_PORT_SEL &= ~BUTTON1_BITS;
-    BUTTON_PORT_DIR &= ~BUTTON1_BITS;
-    BUTTON_PORT_OUT |= BUTTON1_BITS;
-    BUTTON_PORT_REN |= BUTTON1_BITS;
-
-    BUTTON_PORT_IES |= BUTTON1_BITS;
-    BUTTON_PORT_IFG &= ~BUTTON1_BITS;
-    BUTTON_PORT_IE |= BUTTON1_BITS;
-
-    BUTTON2_PORT_SEL &= ~BUTTON2_BITS;
-    BUTTON2_PORT_DIR &= ~BUTTON2_BITS;
-    BUTTON2_PORT_OUT |= BUTTON2_BITS;
-    BUTTON2_PORT_REN |= BUTTON2_BITS;
-
-    BUTTON2_PORT_IES |= BUTTON2_BITS;
-    BUTTON2_PORT_IFG &= ~BUTTON2_BITS;
-    BUTTON2_PORT_IE |= BUTTON2_BITS;
+    buttons_build_gpio_masks();
+    buttons_init_gpio_port(BUTTON_INPUT_GPIO_PORT1);
+    buttons_init_gpio_port(BUTTON_INPUT_GPIO_PORT2);
+    captouch_init();
 }
 
 void buttons_set_wake_hook(ButtonsIsrWakeHook hook)
@@ -66,100 +167,105 @@ void buttons_set_wake_hook(ButtonsIsrWakeHook hook)
     g_buttons_wake_hook = hook;
 }
 
-/* 根据每个按键独立的保护时间过滤重复边沿，减少误触发。 */
-static uint8_t button_event_allowed(uint8_t event)
+/* 根据每个语义动作独立的保护时间过滤重复边沿，减少误触发。 */
+static uint8_t button_action_allowed(uint8_t action)
 {
     uint16_t now;
-    uint16_t *last_tick;
+    uint8_t action_bit;
 
-    now = board_tick10();
-    switch (event) {
-    case BUTTON_EVENT_S1:
-        last_tick = &g_button_s1_last_tick;
-        break;
-    case BUTTON_EVENT_S2:
-        last_tick = &g_button_s2_last_tick;
-        break;
-    case BUTTON_EVENT_S3:
-        last_tick = &g_button_s3_last_tick;
-        break;
-    default:
-        last_tick = &g_button_s4_last_tick;
-        break;
+    if (action >= BUTTON_ACTION_COUNT) {
+        return 0;
     }
-
-    if ((g_button_guard_seen & event) &&
-        !board_tick10_elapsed(*last_tick, BUTTON_REPEAT_GUARD_TICKS)) {
+    now = board_tick10();
+    action_bit = BUTTON_ACTION_BIT(action);
+    if ((g_button_action_guard_seen & action_bit) &&
+        !board_tick10_elapsed(g_button_action_last_tick[action], BUTTON_REPEAT_GUARD_TICKS)) {
         return 0;
     }
 
-    g_button_guard_seen |= event;
-    *last_tick = now;
+    g_button_action_guard_seen |= action_bit;
+    g_button_action_last_tick[action] = now;
     return 1;
 }
 
-/* 从端口中断和实时电平中提取一次稳定的 S1-S4 按键事件。 */
-static uint8_t buttons_take_events(void)
+/* 从端口中断和实时电平中提取一次稳定的语义动作集合。 */
+static uint8_t buttons_take_actions(void)
 {
-    uint8_t irq1_bits;
-    uint8_t irq2_bits;
-    uint8_t pressed1;
-    uint8_t pressed2;
-    uint8_t new1_pressed;
-    uint8_t new2_pressed;
-    uint8_t events;
+    uint8_t irq_bits[BUTTON_GPIO_PORT_COUNT];
+    uint8_t gpio_pressed[BUTTON_GPIO_PORT_COUNT];
+    uint8_t new_gpio_pressed[BUTTON_GPIO_PORT_COUNT];
+    uint8_t touch_pressed;
+    uint8_t new_touch_pressed;
+    uint8_t actions;
+    uint8_t action_bit;
+    uint8_t i;
 
-    pressed1 = (uint8_t)((~BUTTON_PORT_IN) & BUTTON1_BITS);
-    pressed2 = (uint8_t)((~BUTTON2_PORT_IN) & BUTTON2_BITS);
-    irq1_bits = g_button1_irq_bits;
-    irq2_bits = g_button2_irq_bits;
-    if (irq1_bits == 0 && irq2_bits == 0 &&
-        pressed1 == g_button1_last_pressed &&
-        pressed2 == g_button2_last_pressed) {
+    gpio_pressed[BUTTON_INPUT_GPIO_PORT1] = buttons_read_gpio_pressed(BUTTON_INPUT_GPIO_PORT1);
+    gpio_pressed[BUTTON_INPUT_GPIO_PORT2] = buttons_read_gpio_pressed(BUTTON_INPUT_GPIO_PORT2);
+    touch_pressed = captouch_read_pressed_mask();
+    irq_bits[BUTTON_INPUT_GPIO_PORT1] = g_button_irq_bits[BUTTON_INPUT_GPIO_PORT1];
+    irq_bits[BUTTON_INPUT_GPIO_PORT2] = g_button_irq_bits[BUTTON_INPUT_GPIO_PORT2];
+    if (irq_bits[BUTTON_INPUT_GPIO_PORT1] == 0 && irq_bits[BUTTON_INPUT_GPIO_PORT2] == 0 &&
+        gpio_pressed[BUTTON_INPUT_GPIO_PORT1] == g_button_last_pressed[BUTTON_INPUT_GPIO_PORT1] &&
+        gpio_pressed[BUTTON_INPUT_GPIO_PORT2] == g_button_last_pressed[BUTTON_INPUT_GPIO_PORT2] &&
+        touch_pressed == g_touch_last_pressed) {
         return 0;
     }
 
     delay_ms(BUTTON_DEBOUNCE_MS);
 
-    pressed1 = (uint8_t)((~BUTTON_PORT_IN) & BUTTON1_BITS);
-    pressed2 = (uint8_t)((~BUTTON2_PORT_IN) & BUTTON2_BITS);
-    new1_pressed = (uint8_t)(pressed1 & (uint8_t)~g_button1_last_pressed);
-    new2_pressed = (uint8_t)(pressed2 & (uint8_t)~g_button2_last_pressed);
-    events = 0;
-    if ((new1_pressed & BUTTON_S1_BIT) && button_event_allowed(BUTTON_EVENT_S1)) {
-        events |= BUTTON_EVENT_S1;
-    }
-    if ((new1_pressed & BUTTON_S2_BIT) && button_event_allowed(BUTTON_EVENT_S2)) {
-        events |= BUTTON_EVENT_S2;
-    }
-    if ((new2_pressed & BUTTON_S3_BIT) && button_event_allowed(BUTTON_EVENT_S3)) {
-        events |= BUTTON_EVENT_S3;
-    }
-    if ((new2_pressed & BUTTON_S4_BIT) && button_event_allowed(BUTTON_EVENT_S4)) {
-        events |= BUTTON_EVENT_S4;
+    gpio_pressed[BUTTON_INPUT_GPIO_PORT1] = buttons_read_gpio_pressed(BUTTON_INPUT_GPIO_PORT1);
+    gpio_pressed[BUTTON_INPUT_GPIO_PORT2] = buttons_read_gpio_pressed(BUTTON_INPUT_GPIO_PORT2);
+    touch_pressed = captouch_read_pressed_mask();
+    new_gpio_pressed[BUTTON_INPUT_GPIO_PORT1] = (uint8_t)(gpio_pressed[BUTTON_INPUT_GPIO_PORT1] &
+                                                          (uint8_t)~g_button_last_pressed[BUTTON_INPUT_GPIO_PORT1]);
+    new_gpio_pressed[BUTTON_INPUT_GPIO_PORT2] = (uint8_t)(gpio_pressed[BUTTON_INPUT_GPIO_PORT2] &
+                                                          (uint8_t)~g_button_last_pressed[BUTTON_INPUT_GPIO_PORT2]);
+    new_touch_pressed = (uint8_t)(touch_pressed & (uint8_t)~g_touch_last_pressed);
+    actions = 0;
+    for (i = 0; i < BUTTON_INPUT_BINDING_COUNT; i++) {
+        if (g_button_input_bindings[i].kind == BUTTON_INPUT_GPIO_PORT1 &&
+            (new_gpio_pressed[BUTTON_INPUT_GPIO_PORT1] & g_button_input_bindings[i].id) == 0) {
+            continue;
+        }
+        if (g_button_input_bindings[i].kind == BUTTON_INPUT_GPIO_PORT2 &&
+            (new_gpio_pressed[BUTTON_INPUT_GPIO_PORT2] & g_button_input_bindings[i].id) == 0) {
+            continue;
+        }
+        if (g_button_input_bindings[i].kind == BUTTON_INPUT_TOUCH &&
+            (new_touch_pressed & BUTTON_TOUCH_BIT(g_button_input_bindings[i].id)) == 0) {
+            continue;
+        }
+
+        action_bit = BUTTON_ACTION_BIT(g_button_input_bindings[i].action);
+        if ((actions & action_bit) ||
+            button_action_allowed((uint8_t)g_button_input_bindings[i].action)) {
+            actions |= action_bit;
+        }
     }
 
-    g_button1_irq_bits = 0;
-    g_button2_irq_bits = 0;
-    g_button1_last_pressed = pressed1;
-    g_button2_last_pressed = pressed2;
-    BUTTON_PORT_IFG &= ~BUTTON1_BITS;
-    BUTTON2_PORT_IFG &= ~BUTTON2_BITS;
-    BUTTON_PORT_IE |= BUTTON1_BITS;
-    BUTTON2_PORT_IE |= BUTTON2_BITS;
-    return events;
+    g_button_irq_bits[BUTTON_INPUT_GPIO_PORT1] = 0;
+    g_button_irq_bits[BUTTON_INPUT_GPIO_PORT2] = 0;
+    g_button_last_pressed[BUTTON_INPUT_GPIO_PORT1] = gpio_pressed[BUTTON_INPUT_GPIO_PORT1];
+    g_button_last_pressed[BUTTON_INPUT_GPIO_PORT2] = gpio_pressed[BUTTON_INPUT_GPIO_PORT2];
+    g_touch_last_pressed = touch_pressed;
+    buttons_rearm_gpio_port(BUTTON_INPUT_GPIO_PORT1);
+    buttons_rearm_gpio_port(BUTTON_INPUT_GPIO_PORT2);
+    return actions;
 }
 
 #pragma vector=PORT1_VECTOR
 __interrupt void PORT1_ISR(void)
 {
     uint8_t flags;
+    uint8_t mask;
 
-    flags = (uint8_t)(BUTTON_PORT_IFG & BUTTON1_BITS);
+    mask = g_button_gpio_mask[BUTTON_INPUT_GPIO_PORT1];
+    flags = (uint8_t)(BUTTON_PORT_IFG & mask);
     if (flags) {
-        g_button1_irq_bits |= flags;
-        BUTTON_PORT_IE &= ~BUTTON1_BITS;
-        BUTTON_PORT_IFG &= ~BUTTON1_BITS;
+        g_button_irq_bits[BUTTON_INPUT_GPIO_PORT1] |= flags;
+        BUTTON_PORT_IE &= ~mask;
+        BUTTON_PORT_IFG &= ~mask;
         if (g_buttons_wake_hook != 0) {
             g_buttons_wake_hook();
         }
@@ -280,7 +386,7 @@ static void buttons_confirm_setting(void)
     buttons_show_settings();
 }
 
-void buttons_action_s1(const TempSample *last_sample, uint8_t has_sample)
+static void buttons_handle_primary(const TempSample *last_sample, uint8_t has_sample)
 {
     if (g_button_mode == BUTTON_MODE_MAIN) {
         (void)last_sample;
@@ -302,7 +408,7 @@ void buttons_action_s1(const TempSample *last_sample, uint8_t has_sample)
     }
 }
 
-void buttons_action_s2(const TempSample *last_sample, uint8_t has_sample)
+static void buttons_handle_secondary(const TempSample *last_sample, uint8_t has_sample)
 {
     if (g_button_mode == BUTTON_MODE_MAIN) {
         (void)last_sample;
@@ -322,7 +428,7 @@ void buttons_action_s2(const TempSample *last_sample, uint8_t has_sample)
     }
 }
 
-void buttons_action_s3(const TempSample *last_sample, uint8_t has_sample)
+static void buttons_handle_back(const TempSample *last_sample, uint8_t has_sample)
 {
     (void)last_sample;
     (void)has_sample;
@@ -333,7 +439,7 @@ void buttons_action_s3(const TempSample *last_sample, uint8_t has_sample)
     }
 }
 
-void buttons_action_s4(const TempSample *last_sample, uint8_t has_sample)
+static void buttons_handle_confirm(const TempSample *last_sample, uint8_t has_sample)
 {
     (void)last_sample;
     (void)has_sample;
@@ -348,48 +454,63 @@ void buttons_action_s4(const TempSample *last_sample, uint8_t has_sample)
     }
 }
 
+static const ButtonActionHandler button_action_handlers[BUTTON_ACTION_COUNT] = {
+    buttons_handle_primary,
+    buttons_handle_secondary,
+    buttons_handle_back,
+    buttons_handle_confirm
+};
+
+/* 调用一个语义动作处理器，物理输入和业务行为在这里完成解耦。 */
+static void buttons_dispatch_action(uint8_t action, const TempSample *last_sample, uint8_t has_sample)
+{
+    if (action < BUTTON_ACTION_COUNT) {
+        button_action_handlers[action](last_sample, has_sample);
+    }
+}
+
 void buttons_task(const TempSample *last_sample, uint8_t has_sample)
 {
-    uint8_t events;
+    uint8_t actions;
+    uint8_t action;
 
-    events = buttons_take_events();
-    if (events & BUTTON_EVENT_S1) {
-        buttons_action_s1(last_sample, has_sample);
-    }
-    if (events & BUTTON_EVENT_S2) {
-        buttons_action_s2(last_sample, has_sample);
-    }
-    if (events & BUTTON_EVENT_S3) {
-        buttons_action_s3(last_sample, has_sample);
-    }
-    if (events & BUTTON_EVENT_S4) {
-        buttons_action_s4(last_sample, has_sample);
+    actions = buttons_take_actions();
+    for (action = 0; action < BUTTON_ACTION_COUNT; action++) {
+        if (actions & BUTTON_ACTION_BIT(action)) {
+            buttons_dispatch_action(action, last_sample, has_sample);
+        }
     }
 }
 
 uint8_t buttons_pending(void)
 {
-    uint8_t pressed1;
-    uint8_t pressed2;
+    uint8_t gpio_pressed[BUTTON_GPIO_PORT_COUNT];
+    uint8_t touch_pressed;
 
-    pressed1 = (uint8_t)((~BUTTON_PORT_IN) & BUTTON1_BITS);
-    pressed2 = (uint8_t)((~BUTTON2_PORT_IN) & BUTTON2_BITS);
-    return (uint8_t)(g_button1_irq_bits != 0 ||
-                     g_button2_irq_bits != 0 ||
-                     (pressed1 & (uint8_t)~g_button1_last_pressed) != 0 ||
-                     (pressed2 & (uint8_t)~g_button2_last_pressed) != 0);
+    gpio_pressed[BUTTON_INPUT_GPIO_PORT1] = buttons_read_gpio_pressed(BUTTON_INPUT_GPIO_PORT1);
+    gpio_pressed[BUTTON_INPUT_GPIO_PORT2] = buttons_read_gpio_pressed(BUTTON_INPUT_GPIO_PORT2);
+    touch_pressed = captouch_read_pressed_mask();
+    return (uint8_t)(g_button_irq_bits[BUTTON_INPUT_GPIO_PORT1] != 0 ||
+                     g_button_irq_bits[BUTTON_INPUT_GPIO_PORT2] != 0 ||
+                     (gpio_pressed[BUTTON_INPUT_GPIO_PORT1] &
+                      (uint8_t)~g_button_last_pressed[BUTTON_INPUT_GPIO_PORT1]) != 0 ||
+                     (gpio_pressed[BUTTON_INPUT_GPIO_PORT2] &
+                      (uint8_t)~g_button_last_pressed[BUTTON_INPUT_GPIO_PORT2]) != 0 ||
+                     (touch_pressed & (uint8_t)~g_touch_last_pressed) != 0);
 }
 
 #pragma vector=PORT2_VECTOR
 __interrupt void PORT2_ISR(void)
 {
     uint8_t flags;
+    uint8_t mask;
 
-    flags = (uint8_t)(BUTTON2_PORT_IFG & BUTTON2_BITS);
+    mask = g_button_gpio_mask[BUTTON_INPUT_GPIO_PORT2];
+    flags = (uint8_t)(BUTTON2_PORT_IFG & mask);
     if (flags) {
-        g_button2_irq_bits |= flags;
-        BUTTON2_PORT_IE &= ~BUTTON2_BITS;
-        BUTTON2_PORT_IFG &= ~BUTTON2_BITS;
+        g_button_irq_bits[BUTTON_INPUT_GPIO_PORT2] |= flags;
+        BUTTON2_PORT_IE &= ~mask;
+        BUTTON2_PORT_IFG &= ~mask;
         if (g_buttons_wake_hook != 0) {
             g_buttons_wake_hook();
         }

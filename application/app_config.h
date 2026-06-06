@@ -53,6 +53,25 @@
 #define NTC_SERIES_RESISTOR_OHMS    15000UL     /* NTC 分压固定电阻阻值，单位欧姆。 */
 #define NTC_PULLUP_TO_VCC           1           /* NTC 分压结构标志，1 表示上拉电阻接 VCC、NTC 接 GND。 */
 
+/* Pocket Kit Pad1/Pad2：P6.0/P6.1 Comparator B 电容触摸输入。 */
+#define CAP_TOUCH_PORT_DIR          P6DIR     /* 触摸 Pad 所在 P6 端口方向寄存器。 */
+#define CAP_TOUCH_PORT_REN          P6REN     /* 触摸 Pad 所在 P6 端口上下拉使能寄存器。 */
+#define CAP_TOUCH_PORT_OUT          P6OUT     /* 触摸 Pad 所在 P6 端口输出寄存器，用于 RC 充放电。 */
+#define CAP_TOUCH_PORT_SEL          P6SEL     /* 触摸 Pad 所在 P6 端口功能选择寄存器。 */
+#define CAP_TOUCH_ALL_BITS          (BIT0 | BIT1) /* Pad1/Pad2 对应 P6.0/P6.1。 */
+#define CAP_TOUCH_PAD1_CHANNEL      0u        /* Pad1 对应 Comparator B 输入通道 CB0。 */
+#define CAP_TOUCH_PAD2_CHANNEL      1u        /* Pad2 对应 Comparator B 输入通道 CB1。 */
+#define CAP_TOUCH_CHANNEL_COUNT     2u        /* 当前触摸输入通道数量。 */
+#define CAP_TOUCH_OSC_CYCLES        10u       /* 每次测量累计的 RC 振荡边沿数量。 */
+#define CAP_TOUCH_BASELINE_SAMPLES  4u        /* 上电建立触摸基线时每通道采样次数。 */
+#define CAP_TOUCH_MEASURE_TIMEOUT   12000u    /* 单次触摸测量最大轮询次数，防止比较器异常死等。 */
+#define CAP_TOUCH_MIN_THRESHOLD     210u      /* 触摸判定的固定下限，按 16MHz 主频从示例门限折算。 */
+#define CAP_TOUCH_DELTA_MIN         45u       /* 相对基线触摸判定的最小增量。 */
+#define CAP_TOUCH_THRESHOLD_RATIO_DIV 3u      /* 相对基线门限增量，baseline/3 加最小增量。 */
+#define CAP_TOUCH_RELEASE_HYSTERESIS 35u      /* 释放判定比按下判定低的回差，避免临界值来回抖动。 */
+#define CAP_TOUCH_PRESS_SAMPLES     2u        /* 连续达到按下门限的采样次数，满足后才触发一次 Pad 动作。 */
+#define CAP_TOUCH_RELEASE_SAMPLES   3u        /* 连续低于释放门限的采样次数，满足后才允许下一次触发。 */
+
 /* Pocket Kit S1/S2：P1.2/P1.3，S3/S4：P2.3/P2.6，内部上拉，按下为低电平。 */
 #define BUTTON_PORT_IN              P1IN      /* S1/S2 所在 P1 端口输入寄存器。 */
 #define BUTTON_PORT_DIR             P1DIR     /* S1/S2 所在 P1 端口方向寄存器。 */

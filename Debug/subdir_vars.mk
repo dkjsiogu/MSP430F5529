@@ -19,6 +19,7 @@ C_SRCS += \
 ../middleware/app_resources.c \
 ../application/app_state.c \
 ../drivers/board.c \
+../drivers/captouch.c \
 ../application/buttons.c \
 ../application/epaper.c \
 ../middleware/flash_log.c \
@@ -37,6 +38,7 @@ C_DEPS += \
 ./app_resources.d \
 ./app_state.d \
 ./board.d \
+./captouch.d \
 ./buttons.d \
 ./epaper.d \
 ./flash_log.d \
@@ -55,6 +57,7 @@ OBJS += \
 ./app_resources.obj \
 ./app_state.obj \
 ./board.obj \
+./captouch.obj \
 ./buttons.obj \
 ./epaper.obj \
 ./flash_log.obj \
@@ -80,6 +83,7 @@ OBJS__QUOTED += \
 "app_resources.obj" \
 "app_state.obj" \
 "board.obj" \
+"captouch.obj" \
 "buttons.obj" \
 "epaper.obj" \
 "flash_log.obj" \
@@ -101,6 +105,7 @@ C_DEPS__QUOTED += \
 "app_resources.d" \
 "app_state.d" \
 "board.d" \
+"captouch.d" \
 "buttons.d" \
 "epaper.d" \
 "flash_log.d" \
@@ -123,6 +128,7 @@ C_SRCS__QUOTED += \
 "../middleware/app_resources.c" \
 "../application/app_state.c" \
 "../drivers/board.c" \
+"../drivers/captouch.c" \
 "../application/buttons.c" \
 "../application/epaper.c" \
 "../middleware/flash_log.c" \
