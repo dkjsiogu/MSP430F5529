@@ -15,7 +15,7 @@
 #define FLAG_TMP_LOCAL_OK           0x0004u             /* TMP421 本地温度采集有效标志。 */
 
 typedef struct {
-    uint16_t adc;
+    uint32_t ohms;
     int16_t t10;
 } NtcPoint;
 

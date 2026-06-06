@@ -16,31 +16,31 @@
 #define CAL_ADC_15T30               (*(const uint16_t *)0x1A1A) /* MSP430 1.5V 参考下 30 摄氏度校准 ADC 值。 */
 #define CAL_ADC_15T85               (*(const uint16_t *)0x1A1C) /* MSP430 1.5V 参考下 85 摄氏度校准 ADC 值。 */
 static const NtcPoint ntc_table[] = {
-    {3740,  -200},
-    {3629,  -150},
-    {3495,  -100},
-    {3337,   -50},
-    {3156,     0},
-    {2955,    50},
-    {2738,   100},
-    {2510,   150},
-    {2278,   200},
-    {2048,   250},
-    {1825,   300},
-    {1614,   350},
-    {1419,   400},
-    {1241,   450},
-    {1081,   500},
-    { 940,   550},
-    { 815,   600},
-    { 707,   650},
-    { 613,   700},
-    { 532,   750},
-    { 462,   800},
-    { 401,   850},
-    { 350,   900},
-    { 305,   950},
-    { 267,  1000}
+    {105385UL,  -200},
+    { 77898UL,  -150},
+    { 58246UL,  -100},
+    { 44026UL,   -50},
+    { 33621UL,     0},
+    { 25925UL,    50},
+    { 20175UL,   100},
+    { 15837UL,   150},
+    { 12535UL,   200},
+    { 10000UL,   250},
+    {  8037UL,   300},
+    {  6506UL,   350},
+    {  5301UL,   400},
+    {  4348UL,   450},
+    {  3588UL,   500},
+    {  2978UL,   550},
+    {  2486UL,   600},
+    {  2086UL,   650},
+    {  1760UL,   700},
+    {  1492UL,   750},
+    {  1270UL,   800},
+    {  1087UL,   850},
+    {   934UL,   900},
+    {   805UL,   950},
+    {   698UL,  1000}
 };
 
 static uint8_t g_tmp421_addr = 0;
@@ -123,47 +123,7 @@ static int16_t die_adc_to_t10(uint16_t adc)
     return (int16_t)t10;
 }
 
-/* 使用 NTC 查表和线性插值把 ADC 值换算为 0.1 摄氏度。 */
-static int16_t ntc_adc_to_t10(uint16_t adc)
-{
-    uint8_t i;
-    uint16_t a0;
-    uint16_t a1;
-    int16_t t0;
-    int16_t t1;
-    long t;
-    uint16_t scaled_adc;
-    const uint8_t n = (uint8_t)(sizeof(ntc_table) / sizeof(ntc_table[0]));
-
-#if NTC_PULLUP_TO_VCC
-    scaled_adc = adc;
-#else
-    scaled_adc = (uint16_t)(4095u - adc);
-#endif
-
-    if (scaled_adc >= ntc_table[0].adc) {
-        return ntc_table[0].t10;
-    }
-    if (scaled_adc <= ntc_table[n - 1u].adc) {
-        return ntc_table[n - 1u].t10;
-    }
-
-    for (i = 0; i < (uint8_t)(n - 1u); i++) {
-        a0 = ntc_table[i].adc;
-        a1 = ntc_table[i + 1u].adc;
-        if (scaled_adc <= a0 && scaled_adc >= a1) {
-            t0 = ntc_table[i].t10;
-            t1 = ntc_table[i + 1u].t10;
-            t = (long)t0 + ((long)scaled_adc - (long)a0) * ((long)t1 - (long)t0) /
-                ((long)a1 - (long)a0);
-            return (int16_t)t;
-        }
-    }
-
-    return INVALID_T10;
-}
-
-/* 根据 NTC 分压方向把 ADC 值转换成查表使用的统一尺度。 */
+/* 根据 NTC 分压方向把 ADC 值统一成 NTC 两端电压占比。 */
 static uint16_t ntc_scaled_adc(uint16_t adc)
 {
 #if NTC_PULLUP_TO_VCC
@@ -173,17 +133,65 @@ static uint16_t ntc_scaled_adc(uint16_t adc)
 #endif
 }
 
+/* 按分压公式把 ADC 值换算为 NTC 当前阻值，单位欧姆。 */
+static uint32_t ntc_adc_to_ohms(uint16_t adc)
+{
+    uint16_t scaled_adc;
+
+    scaled_adc = ntc_scaled_adc(adc);
+    if (scaled_adc == 0u || scaled_adc >= 4095u) {
+        return 0UL;
+    }
+    return ((uint32_t)NTC_SERIES_RESISTOR_OHMS * (uint32_t)scaled_adc) /
+           (uint32_t)(4095u - scaled_adc);
+}
+
+/* 使用 NTC 阻值查表和线性插值把 ADC 值换算为 0.1 摄氏度。 */
+static int16_t ntc_adc_to_t10(uint16_t adc)
+{
+    uint8_t i;
+    uint32_t r;
+    uint32_t r0;
+    uint32_t r1;
+    int16_t t0;
+    int16_t t1;
+    long t;
+    const uint8_t n = (uint8_t)(sizeof(ntc_table) / sizeof(ntc_table[0]));
+
+    r = ntc_adc_to_ohms(adc);
+    if (r >= ntc_table[0].ohms) {
+        return ntc_table[0].t10;
+    }
+    if (r <= ntc_table[n - 1u].ohms) {
+        return ntc_table[n - 1u].t10;
+    }
+
+    for (i = 0; i < (uint8_t)(n - 1u); i++) {
+        r0 = ntc_table[i].ohms;
+        r1 = ntc_table[i + 1u].ohms;
+        if (r <= r0 && r >= r1) {
+            t0 = ntc_table[i].t10;
+            t1 = ntc_table[i + 1u].t10;
+            t = (long)t0 + ((long)r - (long)r0) * ((long)t1 - (long)t0) /
+                ((long)r1 - (long)r0);
+            return (int16_t)t;
+        }
+    }
+
+    return INVALID_T10;
+}
+
 /* 判断 NTC ADC 值是否落在查表可计算的有效范围内。 */
 static uint8_t ntc_adc_in_table_range(uint16_t adc)
 {
-    uint16_t scaled_adc;
+    uint32_t r;
     const uint8_t n = (uint8_t)(sizeof(ntc_table) / sizeof(ntc_table[0]));
 
-    scaled_adc = ntc_scaled_adc(adc);
-    if (scaled_adc > ntc_table[0].adc) {
+    r = ntc_adc_to_ohms(adc);
+    if (r > ntc_table[0].ohms) {
         return 0;
     }
-    if (scaled_adc < ntc_table[n - 1u].adc) {
+    if (r < ntc_table[n - 1u].ohms) {
         return 0;
     }
     return 1;

@@ -43,13 +43,14 @@
 #define SETTINGS_FLASH_END          0x1880u   /* Info Flash 设置记录区结束地址，不包含该地址。 */
 #define SETTINGS_MAGIC              0x51A7u   /* 设置记录有效性标识，用于区分空白或无效 Flash 数据。 */
 
-/* NTC 默认参数：10k NTC，beta=3950，10k 上拉到 VCC，NTC 接 GND。 */
+/* NTC 参数：10k NTC，beta=3950，15k 固定电阻接 VCC，NTC 接 GND。 */
 #define NTC_ADC_INCH                ADC12INCH_5 /* NTC 热敏电阻使用的 ADC12 输入通道。 */
 #define NTC_PORT_DIR                P6DIR       /* NTC ADC 引脚所在端口方向寄存器。 */
 #define NTC_PORT_REN                P6REN       /* NTC ADC 引脚所在端口上下拉使能寄存器。 */
 #define NTC_PORT_OUT                P6OUT       /* NTC ADC 引脚所在端口输出寄存器。 */
 #define NTC_PORT_SEL                P6SEL       /* NTC ADC 引脚所在端口功能选择寄存器。 */
 #define NTC_PORT_BIT                BIT5        /* NTC ADC 对应的 P6.5 引脚位。 */
+#define NTC_SERIES_RESISTOR_OHMS    15000UL     /* NTC 分压固定电阻阻值，单位欧姆。 */
 #define NTC_PULLUP_TO_VCC           1           /* NTC 分压结构标志，1 表示上拉电阻接 VCC、NTC 接 GND。 */
 
 /* Pocket Kit S1/S2：P1.2/P1.3，S3/S4：P2.3/P2.6，内部上拉，按下为低电平。 */
