@@ -7,8 +7,10 @@
 #include "epaper.h"
 
 typedef enum {
-    BUTTON_ACTION_PRIMARY = 0u,     /* 主动作：主界面进 GIF，子页面向前/增加，S1 和 Pad1 触发。 */
-    BUTTON_ACTION_SECONDARY,        /* 次动作：主界面进文本，子页面向后/减少，S2 和 Pad2 触发。 */
+    BUTTON_ACTION_PRIMARY = 0u,     /* 主动作：主界面进 GIF，S1 触发。 */
+    BUTTON_ACTION_SECONDARY,        /* 次动作：主界面进文本，S2 触发。 */
+    BUTTON_ACTION_UP,               /* 向上动作：前一项/上一页/增加，Pad1 触发。 */
+    BUTTON_ACTION_DOWN,             /* 向下动作：后一项/下一页/减少，Pad2 触发。 */
     BUTTON_ACTION_BACK,             /* 返回动作：进入设置或返回主界面，S3 触发。 */
     BUTTON_ACTION_CONFIRM,          /* 确认动作：确认设置或手动刷新，S4 触发。 */
     BUTTON_ACTION_COUNT             /* 语义动作数量。 */
@@ -46,9 +48,9 @@ typedef void (*ButtonActionHandler)(const TempSample *last_sample, uint8_t has_s
 
 static const ButtonInputBinding g_button_input_bindings[] = {
     { BUTTON_INPUT_GPIO_PORT1, BUTTON_S1_BIT, BUTTON_ACTION_PRIMARY },
-    { BUTTON_INPUT_TOUCH, CAP_TOUCH_PAD1_CHANNEL, BUTTON_ACTION_PRIMARY },
     { BUTTON_INPUT_GPIO_PORT1, BUTTON_S2_BIT, BUTTON_ACTION_SECONDARY },
-    { BUTTON_INPUT_TOUCH, CAP_TOUCH_PAD2_CHANNEL, BUTTON_ACTION_SECONDARY },
+    { BUTTON_INPUT_TOUCH, CAP_TOUCH_PAD1_CHANNEL, BUTTON_ACTION_UP },
+    { BUTTON_INPUT_TOUCH, CAP_TOUCH_PAD2_CHANNEL, BUTTON_ACTION_DOWN },
     { BUTTON_INPUT_GPIO_PORT2, BUTTON_S3_BIT, BUTTON_ACTION_BACK },
     { BUTTON_INPUT_GPIO_PORT2, BUTTON_S4_BIT, BUTTON_ACTION_CONFIRM }
 };
@@ -428,6 +430,46 @@ static void buttons_handle_secondary(const TempSample *last_sample, uint8_t has_
     }
 }
 
+static void buttons_handle_up(const TempSample *last_sample, uint8_t has_sample)
+{
+    if (g_button_mode == BUTTON_MODE_GIF) {
+        (void)last_sample;
+        (void)has_sample;
+        epd_gif_prev_asset();
+    } else if (g_button_mode == BUTTON_MODE_TEXT) {
+        (void)last_sample;
+        (void)has_sample;
+        epd_text_prev_page();
+    } else if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {
+        buttons_move_setting(-1);
+    } else if (g_button_mode == BUTTON_MODE_SETTINGS_EDIT) {
+        buttons_adjust_setting(last_sample, has_sample, 1);
+    } else {
+        (void)last_sample;
+        (void)has_sample;
+    }
+}
+
+static void buttons_handle_down(const TempSample *last_sample, uint8_t has_sample)
+{
+    if (g_button_mode == BUTTON_MODE_GIF) {
+        (void)last_sample;
+        (void)has_sample;
+        epd_gif_next_asset();
+    } else if (g_button_mode == BUTTON_MODE_TEXT) {
+        (void)last_sample;
+        (void)has_sample;
+        epd_text_next_page();
+    } else if (g_button_mode == BUTTON_MODE_SETTINGS_SELECT) {
+        buttons_move_setting(1);
+    } else if (g_button_mode == BUTTON_MODE_SETTINGS_EDIT) {
+        buttons_adjust_setting(last_sample, has_sample, -1);
+    } else {
+        (void)last_sample;
+        (void)has_sample;
+    }
+}
+
 static void buttons_handle_back(const TempSample *last_sample, uint8_t has_sample)
 {
     (void)last_sample;
@@ -457,6 +499,8 @@ static void buttons_handle_confirm(const TempSample *last_sample, uint8_t has_sa
 static const ButtonActionHandler button_action_handlers[BUTTON_ACTION_COUNT] = {
     buttons_handle_primary,
     buttons_handle_secondary,
+    buttons_handle_up,
+    buttons_handle_down,
     buttons_handle_back,
     buttons_handle_confirm
 };
