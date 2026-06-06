@@ -53,6 +53,12 @@
                                 <option id="com.ti.ccstudio.buildDefinitions.MSP430_20.2.compilerID.INCLUDE_PATH.604227444" superClass="com.ti.ccstudio.buildDefinitions.MSP430_20.2.compilerID.INCLUDE_PATH" valueType="includePath">
                                     <listOptionValue value="${CCS_BASE_ROOT}/msp430/include"/>
                                     <listOptionValue value="${PROJECT_ROOT}"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/application"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/drivers"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/middleware"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/middleware/freertos"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/middleware/freertos/FreeRTOS-Kernel/include"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X"/>
                                     <listOptionValue value="${CG_TOOL_ROOT}/include"/>
                                 </option>
                                 <option id="com.ti.ccstudio.buildDefinitions.MSP430_20.2.compilerID.ADVICE__POWER.206631757" superClass="com.ti.ccstudio.buildDefinitions.MSP430_20.2.compilerID.ADVICE__POWER" value="all" valueType="string"/>
@@ -146,6 +152,12 @@
                                 <option id="com.ti.ccstudio.buildDefinitions.MSP430_20.2.compilerID.INCLUDE_PATH.1498717915" superClass="com.ti.ccstudio.buildDefinitions.MSP430_20.2.compilerID.INCLUDE_PATH" valueType="includePath">
                                     <listOptionValue value="${CCS_BASE_ROOT}/msp430/include"/>
                                     <listOptionValue value="${PROJECT_ROOT}"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/application"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/drivers"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/middleware"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/middleware/freertos"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/middleware/freertos/FreeRTOS-Kernel/include"/>
+                                    <listOptionValue value="${PROJECT_ROOT}/middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X"/>
                                     <listOptionValue value="${CG_TOOL_ROOT}/include"/>
                                 </option>
                                 <option id="com.ti.ccstudio.buildDefinitions.MSP430_20.2.compilerID.ADVICE__POWER.564797280" superClass="com.ti.ccstudio.buildDefinitions.MSP430_20.2.compilerID.ADVICE__POWER" value="all" valueType="string"/>

@@ -17,14 +17,14 @@
 
 ## 当前架构边界
 
-- `main.c` 是显式调度入口，负责初始化和主循环，不隐藏关键子系统。
-- `app_resources.c/.h` 是应用资源门面。上层只依赖它读取图片帧、字形和文本，不直接依赖 SD/FatFs。
-- `sd_assets.c/.h` 是底层 FAT32 SD 资源索引和文件读取实现，直接处理 `ASSET.IDX`、`IMG/`、`TEXT/`。
-- `text_reader.c/.h` 负责 `BOOK.TXT` 的 UTF-8 解码、分页、上一页偏移栈；`epaper.c` 不再解析文本。
-- `epaper.c/.h` 负责墨水屏驱动和页面渲染，只消费资源帧、字形行和阅读页结果，不直接调用 `sd_assets`。
-- `buttons.c/.h` 负责 S1-S4 去抖、事件和页面/设置状态机。
-- `app_state.c/.h` 负责设置参数和 Info Flash 持久化。
-- `flash_log.c/.h` 负责温度历史记录，不要把实时显示链路强行绕进 Flash。
+- `main.cpp` 是显式调度入口，负责初始化、FreeRTOS 静态任务创建和调度器启动，不隐藏关键子系统。
+- `application/` 是最高层应用逻辑：页面渲染入口、按键业务状态机、串口命令、应用设置和公共应用类型。
+- `middleware/` 是中间连接层：应用资源门面、SD 资源索引、文本分页、Flash 历史日志和格式化工具。
+- `drivers/` 是底层 C 驱动：板级时钟/GPIO/定时器、传感器和 UART。
+- `fatfs/` 保留 FatFs 和 SD SPI 适配代码，直接处理块设备和文件系统。
+- `application/epaper.c/.h` 负责墨水屏驱动和页面渲染，只消费资源帧、字形行和阅读页结果，不直接调用 `sd_assets`。
+- `middleware/app_resources.c/.h` 是应用资源门面。上层只依赖它读取图片帧、字形和文本，不直接依赖 SD/FatFs。
+- `middleware/sd_assets.c/.h` 是 FAT32 SD 资源索引和文件读取实现，直接处理 `ASSET.IDX`、`IMG/`、`TEXT/`。
 
 ## 显示和交互现状
 

@@ -1,6 +1,6 @@
 # MSP430F5529 温度记录仪
 
-这是一个基于 MSP430F5529 Pocket Kit 的温度采集、显示、记录和报警项目。系统采集片内温度、外接 NTC 热敏电阻温度和 TMP421 本地温度，并通过墨水屏显示当前数据和历史数据。项目支持定时采样、片内 Flash 存储、按键设置参数和蜂鸣器报警。
+这是一个基于 MSP430F5529 Pocket Kit 的温度采集、显示、记录和报警项目。系统采集片内温度、外接 NTC 热敏电阻温度和 TMP421 本地温度，并通过墨水屏显示当前数据和历史数据。项目支持 FreeRTOS 静态任务调度、定时采样、片内 Flash 存储、按键设置参数和蜂鸣器报警。
 
 ## 功能特性
 
@@ -10,13 +10,14 @@
 - SD 卡资源：支持 32GB FAT32 SDHC 卡读写，图片、字库和阅读文本放在 `IMG/`、`TEXT/` 目录并由 `ASSET.IDX` 索引。
 - 参数设置：通过 S1-S4 按键设置采样间隔、报警阈值、存储条数和报警时长。
 - 蜂鸣器报警：温度超过阈值后，通过 P3.6 输出方波驱动无源蜂鸣器。
-- 低功耗等待：主循环空闲时进入 LPM0，由采样定时器、按键中断或串口接收唤醒。
+- FreeRTOS 调度：采样、交互、显示和 Flash 写入拆成静态任务，避免把长耗时操作全部塞进主循环。
 
 ## 技术栈
 
 - MCU：TI MSP430F5529
-- 开发环境：Code Composer Studio
-- 语言：C
+- 开发环境：Code Composer Studio，VS Code 用于代码浏览和编辑
+- 语言：底层驱动 C，应用入口和任务编排 C++03
+- RTOS：FreeRTOS 静态任务，MSP430X CCS 移植层
 - 显示：SSD1673 墨水屏驱动，软件 SPI
 - 传感器：MSP430 片内温度传感器、NTC ADC、TMP421 I2C
 - 存储：MSP430 片内 Flash、FatFs FAT32 SD 卡
@@ -27,27 +28,26 @@
 
 ```text
 .
-├── main.c                 主循环，显式初始化资源层并调度采样、显示、按键、Flash 和低功耗
-├── app_config.h           全局硬件引脚和应用参数配置
-├── app_types.h            温度样本、历史记录等公共数据结构
-├── app_state.c/.h         应用设置管理和 Info Flash 持久化
-├── app_resources.c/.h     应用资源门面，向主循环和渲染层提供图片、字库和文本接口
-├── board.c/.h             时钟、GPIO、采样定时器、蜂鸣器、心跳 LED
-├── buttons.c/.h           S1-S4 按键采集、去抖和设置状态机
-├── sensors.c/.h           DIE、NTC、TMP421 温度采集
-├── epaper.c/.h            墨水屏驱动和页面渲染，只消费资源帧和阅读页结果
-├── flash_log.c/.h         温度历史记录 Flash 存取
-├── sd_assets.c/.h         FAT32 SD 卡索引、图片、字库和文本的底层加载
-├── text_reader.c/.h       BOOK.TXT UTF-8 解码、分页和上一页偏移栈
-├── fatfs/                 Pocket Kit SD SPI 适配后的 FatFs 文件系统
-├── serial_control.c/.h    串口接收命令处理
-├── uart.c/.h              UART1 接收中断封装
-├── format.c/.h            小型字符串格式化工具
-├── tools/                 图片/GIF 到墨水屏帧资源的转换脚本
-├── sdcard/                可直接复制到 SD 卡根目录的示例资源
-├── lnk_msp430f5529.cmd    MSP430F5529 链接脚本
-└── targetConfigs/         CCS 目标配置
+├── main.cpp               显式启动入口，按顺序初始化子系统并启动 FreeRTOS。
+├── application/           最高层应用：页面、状态、按键业务、串口命令和应用类型配置。
+├── middleware/            中间连接层：资源门面、SD 资源索引、文本分页、Flash 日志和格式化工具。
+├── middleware/freertos/   FreeRTOS 内核、MSP430X 移植层和 RTOS hooks。
+├── drivers/               底层 C 驱动：板级时钟/GPIO/定时器、传感器和 UART。
+├── fatfs/                 Pocket Kit SD SPI 适配后的 FatFs 文件系统。
+├── .vscode/               VS Code IntelliSense 配置和 MSP430/TI 语法兼容头。
+├── tools/                 图片/GIF/字库/文本资源转换脚本。
+├── sdcard/                可直接复制到 SD 卡根目录的示例资源。
+├── lnk_msp430f5529.cmd    MSP430F5529 链接脚本。
+└── targetConfigs/         CCS 目标配置。
 ```
+
+## 分层边界
+
+- `main.cpp` 保持短而显式，只展示启动顺序、任务创建和调度器启动。
+- `application/` 放最高层业务逻辑、页面状态、按键状态机、串口命令和 RTOS 任务编排。
+- `middleware/` 连接应用层和底层资源，包括 SD 资源门面、文本分页、Flash 历史日志、格式化工具和 FreeRTOS。
+- `drivers/` 保持底层 C 驱动边界，直接处理寄存器、时钟、GPIO、定时器、传感器和 UART。
+- `fatfs/` 保留 FatFs 与 SD SPI 块设备适配，应用层不直接依赖 FatFs 细节。
 
 ## 按键说明
 
@@ -143,9 +143,25 @@ cd E:\code\ccs\GPIO\LED\Debug
 Debug\1. LED.out
 ```
 
+## VS Code 代码识别
+
+工程实际构建仍以 CCS 为准。VS Code 只负责编辑和跳转，当前通过 `.vscode/c_cpp_properties.json` 配置 MSP430F5529 的 include path，并通过 `.vscode/msp430_intellisense.h` 兼容 TI 编译器扩展语法：
+
+- `__interrupt`、`interrupt` 等 ISR 声明关键字。
+- `__far`、`__near`、`__data16`、`__data20` 等 MSP430 地址模型关键字。
+- `__asm volatile` 等 FreeRTOS MSP430X port 使用的内联汇编写法。
+- `__MSP430__`、`__MSP430X__`、`__MSP430F5529__`、`__LARGE_CODE_MODEL__` 等目标宏。
+
+如果 VS Code 仍显示旧的 `C/C++(129)` 或 includePath 误报，执行：
+
+```text
+Ctrl+Shift+P -> C/C++: Reset IntelliSense Database
+Ctrl+Shift+P -> Developer: Reload Window
+```
+
 ## 低功耗说明
 
-主循环在没有待处理墨水屏刷新任务时进入 `LPM0`。`Timer0_A0`、`PORT1/PORT2` 按键中断和 `USCI_A1` 串口接收中断会在退出中断时清除 `LPM0_bits`，唤醒主循环继续处理任务。由于当前墨水屏动画追求刷新流畅度，实际省电效果会受到持续刷新影响。
+当前系统由 FreeRTOS 调度。`Timer0_A0` 提供采样节拍，`PORT1/PORT2` 按键中断和 `USCI_A1` 串口接收中断会唤醒对应任务；空闲任务由 FreeRTOS 管理。由于墨水屏刷新、SD 访问和 Flash 写入仍是明显耗时操作，低功耗策略应在任务拆分稳定后再继续细化。
 
 ## 注意事项
 

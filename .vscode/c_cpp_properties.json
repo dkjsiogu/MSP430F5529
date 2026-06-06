@@ -15,7 +15,14 @@
                 "D:/ccs/ccs/tools/compiler/ti-cgt-msp430_21.6.1.LTS/include"
             ],
             "defines": [
-                "__MSP430F5529__"
+                "__MSP430__",
+                "__MSP430X__",
+                "__MSP430F5529__",
+                "__TI_COMPILER_VERSION__=2106001",
+                "__LARGE_CODE_MODEL__"
+            ],
+            "forcedInclude": [
+                "${workspaceFolder}/.vscode/msp430_intellisense.h"
             ],
             "browse": {
                 "path": [
@@ -33,7 +40,7 @@
                 "limitSymbolsToIncludedHeaders": true
             },
             "compilerPath": "",
-            "intelliSenseMode": "windows-msvc-x86",
+            "intelliSenseMode": "gcc-x86",
             "cStandard": "c99",
             "cppStandard": "c++03"
         }
