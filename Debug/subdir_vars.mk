@@ -6,7 +6,6 @@ SHELL = cmd.exe
 
 # Add inputs and outputs from these tool invocations to the build variables 
 CPP_SRCS += \
-../application/FirmwareApp.cpp \
 ../main.cpp
 
 ASM_SRCS += \
@@ -59,7 +58,6 @@ OBJS += \
 ./epaper.obj \
 ./flash_log.obj \
 ./format.obj \
-./FirmwareApp.obj \
 ./main.obj \
 ./sd_assets.obj \
 ./sensors.obj \
@@ -73,7 +71,6 @@ OBJS += \
 ./portext.obj
 
 CPP_DEPS += \
-./FirmwareApp.d \
 ./main.d
 
 OBJS__QUOTED += \
@@ -84,7 +81,6 @@ OBJS__QUOTED += \
 "epaper.obj" \
 "flash_log.obj" \
 "format.obj" \
-"FirmwareApp.obj" \
 "main.obj" \
 "sd_assets.obj" \
 "sensors.obj" \
@@ -116,7 +112,6 @@ C_DEPS__QUOTED += \
 "port.d"
 
 CPP_DEPS__QUOTED += \
-"FirmwareApp.d" \
 "main.d"
 
 C_SRCS__QUOTED += \
@@ -138,7 +133,6 @@ C_SRCS__QUOTED += \
 "../middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X/port.c"
 
 CPP_SRCS__QUOTED += \
-"../application/FirmwareApp.cpp" \
 "../main.cpp"
 
 
