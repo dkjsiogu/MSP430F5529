@@ -116,6 +116,8 @@ static uint16_t g_epd_target_history_start = 0;
 static uint16_t g_epd_last_auto_frame_tick = 0;
 static uint16_t g_epd_last_history_scroll_tick = 0;
 static uint16_t g_epd_last_gif_frame_tick = 0;
+static uint16_t g_epd_last_render_tick = 0;
+static uint8_t g_epd_has_render_tick = 0;
 static TempSample g_epd_target_sample;
 static uint8_t epd_buf[EPD_BUF_SIZE];
 static uint8_t g_resource_row_buf[APP_RESOURCE_ROW_MAX_BYTES];
@@ -226,6 +228,22 @@ static void epd_request_render(uint8_t urgent)
 {
     (void)urgent;
     g_epd_render_dirty = 1;
+}
+
+/* 判断当前是否允许向墨水屏提交下一帧，按配置统一限制屏幕帧率。 */
+static uint8_t epd_render_frame_ready(void)
+{
+    if (!g_epd_has_render_tick) {
+        return 1;
+    }
+    return board_tick10_elapsed(g_epd_last_render_tick, EPD_RENDER_MIN_TICKS);
+}
+
+/* 记录最近一次实际刷屏时间，让按键响应和墨水屏帧率解耦。 */
+static void epd_note_render_frame(void)
+{
+    g_epd_has_render_tick = 1;
+    g_epd_last_render_tick = board_tick10();
 }
 
 /* 判断主界面自动动画帧是否到达刷新间隔。 */
@@ -716,6 +734,8 @@ void epd_init(void)
     g_epd_last_auto_frame_tick = board_tick10();
     g_epd_last_history_scroll_tick = board_tick10();
     g_epd_last_gif_frame_tick = board_tick10();
+    g_epd_last_render_tick = board_tick10();
+    g_epd_has_render_tick = 0;
     g_hourglass_cycle_start_tick = board_tick10();
     g_mascot_frame_index = 0;
     g_gif_image_id = APP_RESOURCE_IMAGE_MASCOT;
@@ -1107,6 +1127,7 @@ void epd_full_refresh_once(void)
         epd_ssd_init_controller_and_clear();
     }
 
+    g_epd_has_render_tick = 0;
     epd_request_render(1);
 }
 
@@ -1845,6 +1866,8 @@ void epd_show_settings_page(uint8_t selected, uint8_t editing)
 
 void epd_render_task(void)
 {
+    uint8_t rendered;
+
     if (!g_epd_render_dirty) {
         if (epd_gif_frame_due()) {
             g_epd_render_dirty = 1;
@@ -1857,7 +1880,12 @@ void epd_render_task(void)
         }
     }
 
+    if (!epd_render_frame_ready()) {
+        return;
+    }
+
     g_epd_render_dirty = 0;
+    rendered = 0;
 
     if (g_epd_render_view == EPD_VIEW_GIF) {
         if (g_epd_driver == EPD_DRIVER_SPD2701) {
@@ -1866,24 +1894,28 @@ void epd_render_task(void)
             epd_show_gif();
         }
         g_epd_last_gif_frame_tick = board_tick10();
+        rendered = 1;
     } else if (g_epd_render_view == EPD_VIEW_HISTORY) {
         if (g_epd_driver == EPD_DRIVER_SPD2701) {
             epd_alt_show_history(g_epd_target_history_start);
         } else {
             epd_show_history(g_epd_target_history_start);
         }
+        rendered = 1;
     } else if (g_epd_render_view == EPD_VIEW_SETTINGS) {
         if (g_epd_driver == EPD_DRIVER_SPD2701) {
             epd_alt_show_settings();
         } else {
             epd_show_settings();
         }
+        rendered = 1;
     } else if (g_epd_render_view == EPD_VIEW_TEXT) {
         if (g_epd_driver == EPD_DRIVER_SPD2701) {
             epd_alt_show_text_page();
         } else {
             epd_show_text_page();
         }
+        rendered = 1;
     } else if (g_epd_has_target_sample) {
         if (g_epd_driver == EPD_DRIVER_SPD2701) {
             epd_alt_show_current(&g_epd_target_sample);
@@ -1893,6 +1925,11 @@ void epd_render_task(void)
         if (g_epd_auto_update) {
             g_epd_last_auto_frame_tick = board_tick10();
         }
+        rendered = 1;
+    }
+
+    if (rendered) {
+        epd_note_render_frame();
     }
 }
 

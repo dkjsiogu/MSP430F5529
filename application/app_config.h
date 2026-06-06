@@ -134,6 +134,7 @@
 #define EPD_FULL_POST_UPDATE_MS     1500u     /* 全屏刷新完成后的稳定等待时间，单位毫秒。 */
 #define EPD_PARTIAL_POST_UPDATE_MS  60u       /* 局部刷新完成后的稳定等待时间，单位毫秒。 */
 #define EPD_NO_BUSY_FALLBACK_MS     120u      /* 未检测到 BUSY 变化时的兜底等待时间，单位毫秒。 */
+#define EPD_RENDER_MIN_TICKS        1u        /* 墨水屏两次实际提交的最小间隔，1 个 10ms 节拍用于避免同一 tick 重复提交。 */
 #define EPD_AUTO_FRAME_TICKS        10u       /* 自动温度页两帧之间的节拍间隔，约 100ms，匹配 GIF 帧时长。 */
 #define EPD_HISTORY_SCROLL_TICKS    160u      /* 历史页滚动播放间隔，约 1.6 秒，并重新读取 Flash。 */
 #define EPD_STARTUP_SETTLE_MS       500u      /* 墨水屏上电后开始初始化前的稳定等待时间，单位毫秒。 */
