@@ -8,6 +8,9 @@ SHELL = cmd.exe
 CPP_SRCS += \
 ../main.cpp
 
+ASM_SRCS += \
+../middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X/portext.asm
+
 CMD_SRCS += \
 ../lnk_msp430f5529.cmd 
 
@@ -23,7 +26,11 @@ C_SRCS += \
 ../sensors.c \
 ../serial_control.c \
 ../text_reader.c \
-../uart.c
+../uart.c \
+../middleware/freertos/rtos_hooks.c \
+../middleware/freertos/FreeRTOS-Kernel/list.c \
+../middleware/freertos/FreeRTOS-Kernel/tasks.c \
+../middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X/port.c
 
 C_DEPS += \
 ./app_resources.d \
@@ -37,7 +44,11 @@ C_DEPS += \
 ./sensors.d \
 ./serial_control.d \
 ./text_reader.d \
-./uart.d
+./uart.d \
+./rtos_hooks.d \
+./list.d \
+./tasks.d \
+./port.d
 
 OBJS += \
 ./app_resources.obj \
@@ -52,7 +63,12 @@ OBJS += \
 ./sensors.obj \
 ./serial_control.obj \
 ./text_reader.obj \
-./uart.obj
+./uart.obj \
+./rtos_hooks.obj \
+./list.obj \
+./tasks.obj \
+./port.obj \
+./portext.obj
 
 CPP_DEPS += \
 ./main.d
@@ -70,7 +86,12 @@ OBJS__QUOTED += \
 "sensors.obj" \
 "serial_control.obj" \
 "text_reader.obj" \
-"uart.obj"
+"uart.obj" \
+"rtos_hooks.obj" \
+"list.obj" \
+"tasks.obj" \
+"port.obj" \
+"portext.obj"
 
 C_DEPS__QUOTED += \
 "app_resources.d" \
@@ -84,7 +105,11 @@ C_DEPS__QUOTED += \
 "sensors.d" \
 "serial_control.d" \
 "text_reader.d" \
-"uart.d"
+"uart.d" \
+"rtos_hooks.d" \
+"list.d" \
+"tasks.d" \
+"port.d"
 
 CPP_DEPS__QUOTED += \
 "main.d"
@@ -101,7 +126,11 @@ C_SRCS__QUOTED += \
 "../sensors.c" \
 "../serial_control.c" \
 "../text_reader.c" \
-"../uart.c"
+"../uart.c" \
+"../middleware/freertos/rtos_hooks.c" \
+"../middleware/freertos/FreeRTOS-Kernel/list.c" \
+"../middleware/freertos/FreeRTOS-Kernel/tasks.c" \
+"../middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X/port.c"
 
 CPP_SRCS__QUOTED += \
 "../main.cpp"

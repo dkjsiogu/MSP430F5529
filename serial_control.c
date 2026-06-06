@@ -9,6 +9,22 @@
 #include "uart.h"
 
 static uint16_t g_history_page = 0;
+static SerialFlashEraseHandler g_flash_erase_handler = 0;
+
+static void serial_control_erase_flash_log(void)
+{
+    if (g_flash_erase_handler != 0) {
+        g_flash_erase_handler();
+    } else {
+        flash_erase_log();
+        epd_show_history_page(0);
+    }
+}
+
+void serial_control_set_flash_erase_handler(SerialFlashEraseHandler handler)
+{
+    g_flash_erase_handler = handler;
+}
 
 /* 解析串口收到的单字符命令，并映射为本地显示或设置动作。 */
 static void handle_rx_char(uint8_t cmd)
@@ -52,9 +68,8 @@ static void handle_rx_char(uint8_t cmd)
         sample_timer_force_due();
         break;
     case 'e':
-        flash_erase_log();
         g_history_page = 0;
-        epd_show_history_page(0);
+        serial_control_erase_flash_log();
         break;
     case 'i':
         (void)tmp421_detect();

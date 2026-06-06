@@ -8,10 +8,15 @@
 
 #include "app_types.h"
 
+typedef void (*BoardDelayHook)(uint16_t ms);               /* 可选延时钩子：RTOS 启动后用于把长阻塞延时交还给调度器。 */
+typedef void (*BoardIsrWakeHook)(void);                    /* ISR 唤醒钩子：由定时器中断调用，回调内部必须使用 ISR-safe API。 */
+
 void delay_ms(uint16_t ms);                                /* 阻塞延时指定毫秒数。 */
+void board_set_delay_hook(BoardDelayHook hook);            /* 设置延时钩子；传入 0 恢复默认忙等延时。 */
 void clock_init(void);                                     /* 初始化系统时钟和 SMCLK。 */
 void gpio_init(void);                                      /* 初始化板上 GPIO 默认方向和输出状态。 */
 void sample_timer_init(void);                              /* 初始化周期采样定时器。 */
+void sample_timer_set_due_hook(BoardIsrWakeHook hook);     /* 设置采样到期 ISR 唤醒钩子；传入 0 禁用。 */
 uint8_t sample_timer_take_due(void);                       /* 取走一次采样到期标志，到期返回 1。 */
 void sample_timer_force_due(void);                         /* 强制置位采样到期标志，让主循环立即采样。 */
 uint16_t board_tick10(void);                               /* 获取 10ms 系统节拍，允许自然回绕。 */

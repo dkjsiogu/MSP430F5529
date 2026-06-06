@@ -7,6 +7,8 @@ static volatile uint8_t g_subsecond_ticks = 0;
 static volatile uint16_t g_tick_10ms = 0;
 static volatile uint8_t g_buzzer_alarm_seconds = 0;
 static uint8_t g_buzzer_on = 0;
+static BoardDelayHook g_delay_hook = 0;
+static BoardIsrWakeHook g_sample_due_hook = 0;
 
 /* 按 TI 推荐流程把 PMM 核心电压提高一级，保证高主频运行稳定。 */
 static uint8_t pmm_set_vcore_up(uint8_t level)
@@ -91,11 +93,25 @@ static void pmm_set_vcore(uint8_t target_level)
     }
 }
 
-void delay_ms(uint16_t ms)
+static void board_busy_delay_ms(uint16_t ms)
 {
     while (ms--) {
         __delay_cycles(MCLK_HZ / 1000u);
     }
+}
+
+void delay_ms(uint16_t ms)
+{
+    if (g_delay_hook != 0) {
+        g_delay_hook(ms);
+        return;
+    }
+    board_busy_delay_ms(ms);
+}
+
+void board_set_delay_hook(BoardDelayHook hook)
+{
+    g_delay_hook = hook;
 }
 
 void clock_init(void)
@@ -197,6 +213,11 @@ void sample_timer_init(void)
     TA0CTL = TASSEL_1 | MC_1 | TACLR;
 }
 
+void sample_timer_set_due_hook(BoardIsrWakeHook hook)
+{
+    g_sample_due_hook = hook;
+}
+
 uint8_t sample_timer_take_due(void)
 {
     uint8_t due;
@@ -241,6 +262,9 @@ __interrupt void TIMER0_A0_ISR(void)
         if (g_second_count >= app_sample_interval()) {
             g_second_count = 0;
             g_sample_due = 1;
+            if (g_sample_due_hook != 0) {
+                g_sample_due_hook();
+            }
         }
     }
 

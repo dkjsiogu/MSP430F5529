@@ -23,6 +23,11 @@ ORDERED_OBJS += \
 "./serial_control.obj" \
 "./text_reader.obj" \
 "./uart.obj" \
+"./rtos_hooks.obj" \
+"./list.obj" \
+"./tasks.obj" \
+"./port.obj" \
+"./portext.obj" \
 "./fatfs/HAL_SDCard.obj" \
 "./fatfs/ff.obj" \
 "./fatfs/mmc.obj" \
@@ -152,8 +157,8 @@ all: $(OBJS) $(CMD_SRCS) $(GEN_CMDS)
 # Other Targets
 clean:
 	-$(RM) $(EXE_OUTPUTS__QUOTED)
-	-$(RM) "app_resources.obj" "app_state.obj" "board.obj" "buttons.obj" "epaper.obj" "flash_log.obj" "format.obj" "main.obj" "sd_assets.obj" "sensors.obj" "serial_control.obj" "text_reader.obj" "uart.obj" "fatfs\HAL_SDCard.obj" "fatfs\ff.obj" "fatfs\mmc.obj"
-	-$(RM) "app_resources.d" "app_state.d" "board.d" "buttons.d" "epaper.d" "flash_log.d" "format.d" "sd_assets.d" "sensors.d" "serial_control.d" "text_reader.d" "uart.d" "fatfs\HAL_SDCard.d" "fatfs\ff.d" "fatfs\mmc.d"
+	-$(RM) "app_resources.obj" "app_state.obj" "board.obj" "buttons.obj" "epaper.obj" "flash_log.obj" "format.obj" "main.obj" "sd_assets.obj" "sensors.obj" "serial_control.obj" "text_reader.obj" "uart.obj" "rtos_hooks.obj" "list.obj" "tasks.obj" "port.obj" "portext.obj" "fatfs\HAL_SDCard.obj" "fatfs\ff.obj" "fatfs\mmc.obj"
+	-$(RM) "app_resources.d" "app_state.d" "board.d" "buttons.d" "epaper.d" "flash_log.d" "format.d" "sd_assets.d" "sensors.d" "serial_control.d" "text_reader.d" "uart.d" "rtos_hooks.d" "list.d" "tasks.d" "port.d" "fatfs\HAL_SDCard.d" "fatfs\ff.d" "fatfs\mmc.d"
 	-$(RM) "main.d"
 	-@echo ' '
 

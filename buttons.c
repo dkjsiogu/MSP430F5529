@@ -38,6 +38,7 @@ static uint16_t g_button_s3_last_tick = 0;
 static uint16_t g_button_s4_last_tick = 0;
 static uint8_t g_button_mode = BUTTON_MODE_MAIN;
 static uint8_t g_settings_item = SETTINGS_ITEM_SAMPLE;
+static ButtonsIsrWakeHook g_buttons_wake_hook = 0;
 
 void buttons_init(void)
 {
@@ -58,6 +59,11 @@ void buttons_init(void)
     BUTTON2_PORT_IES |= BUTTON2_BITS;
     BUTTON2_PORT_IFG &= ~BUTTON2_BITS;
     BUTTON2_PORT_IE |= BUTTON2_BITS;
+}
+
+void buttons_set_wake_hook(ButtonsIsrWakeHook hook)
+{
+    g_buttons_wake_hook = hook;
 }
 
 /* 根据每个按键独立的保护时间过滤重复边沿，减少误触发。 */
@@ -154,6 +160,9 @@ __interrupt void PORT1_ISR(void)
         g_button1_irq_bits |= flags;
         BUTTON_PORT_IE &= ~BUTTON1_BITS;
         BUTTON_PORT_IFG &= ~BUTTON1_BITS;
+        if (g_buttons_wake_hook != 0) {
+            g_buttons_wake_hook();
+        }
         __bic_SR_register_on_exit(LPM0_bits);
     }
 }
@@ -381,6 +390,9 @@ __interrupt void PORT2_ISR(void)
         g_button2_irq_bits |= flags;
         BUTTON2_PORT_IE &= ~BUTTON2_BITS;
         BUTTON2_PORT_IFG &= ~BUTTON2_BITS;
+        if (g_buttons_wake_hook != 0) {
+            g_buttons_wake_hook();
+        }
         __bic_SR_register_on_exit(LPM0_bits);
     }
 }

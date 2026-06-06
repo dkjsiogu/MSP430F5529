@@ -1,6 +1,8 @@
 #include "uart.h"
 
 static volatile uint8_t g_uart_rx_char = 0;
+static UartIsrWakeHook g_uart_rx_hook = 0;
+
 void uart_init(void)
 {
     P4SEL &= ~BIT4;
@@ -13,6 +15,11 @@ void uart_init(void)
     UCA1MCTL = UCBRF_3 | UCBRS_0 | UCOS16;
     UCA1CTL1 &= ~UCSWRST;
     UCA1IE |= UCRXIE;
+}
+
+void uart_set_rx_hook(UartIsrWakeHook hook)
+{
+    g_uart_rx_hook = hook;
 }
 
 uint8_t uart_take_rx(void)
@@ -33,6 +40,9 @@ __interrupt void USCI_A1_ISR(void)
         c = UCA1RXBUF;
         if (c != '\r' && c != '\n' && c != ' ' && c != '\t') {
             g_uart_rx_char = c;
+            if (g_uart_rx_hook != 0) {
+                g_uart_rx_hook();
+            }
             __bic_SR_register_on_exit(LPM0_bits);
         }
         break;

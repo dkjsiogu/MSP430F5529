@@ -8,7 +8,10 @@
 
 #include "app_types.h"
 
+typedef void (*ButtonsIsrWakeHook)(void);                  /* ISR 唤醒钩子：回调内部必须使用 ISR-safe API。 */
+
 void buttons_init(void);                                   /* 初始化 S1-S4 按键 GPIO 和端口中断。 */
+void buttons_set_wake_hook(ButtonsIsrWakeHook hook);       /* 设置按键中断唤醒钩子；传入 0 禁用。 */
 void buttons_task(const TempSample *last_sample, uint8_t has_sample); /* 轮询并处理一次 S1-S4 按键任务。 */
 uint8_t buttons_pending(void);                            /* 判断是否已有未处理按键输入，供主循环优先调度。 */
 void buttons_action_s1(const TempSample *last_sample, uint8_t has_sample); /* 执行 S1 当前功能：主界面进全屏 GIF，GIF/阅读页向前翻页，设置页上移或数值增加。 */
