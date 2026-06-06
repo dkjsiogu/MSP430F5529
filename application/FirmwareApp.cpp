@@ -96,3 +96,8 @@ void start()
 }
 
 } // namespace application
+
+void application_start()
+{
+    application::start();
+}
