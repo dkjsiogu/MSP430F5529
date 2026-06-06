@@ -6,7 +6,8 @@
       "type": "node-terminal",
       "request": "launch",
       "cwd": "${workspaceFolder}",
-      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}\\.vscode\\build_and_flash.ps1\""
+      "preLaunchTask": "MSP430: Build and Flash",
+      "command": "cmd /c exit 0"
     }
   ]
 }

@@ -29,10 +29,10 @@
 ```text
 .
 ├── main.cpp               显式启动入口，按顺序初始化子系统并启动 FreeRTOS。
-├── application/           最高层应用：页面、状态、按键业务、串口命令和应用类型配置。
-├── middleware/            中间连接层：资源门面、SD 资源索引、文本分页、Flash 日志和格式化工具。
+├── application/           最高层应用：交互状态机、任务编排、串口命令、应用状态和应用类型配置。
+├── middleware/            中间连接层：公共类型、系统时基、语义输入、显示服务、资源门面、SD 资源索引、文本分页、设置存储、Flash 日志和格式化工具。
 ├── middleware/freertos/   FreeRTOS 内核、MSP430X 移植层和 RTOS hooks。
-├── drivers/               底层 C 驱动：板级时钟/GPIO/定时器、传感器和 UART。
+├── drivers/               底层 C 驱动：板级时钟/GPIO/定时器、传感器、UART、输入扫描和墨水屏面板时序。
 ├── fatfs/                 Pocket Kit SD SPI 适配后的 FatFs 文件系统。
 ├── .vscode/               VS Code IntelliSense 配置和 MSP430/TI 语法兼容头。
 ├── tools/                 图片/GIF/字库/文本资源转换脚本。
@@ -44,9 +44,9 @@
 ## 分层边界
 
 - `main.cpp` 保持短而显式，只展示启动顺序、任务创建和调度器启动。
-- `application/` 放最高层业务逻辑、页面状态、按键状态机、串口命令和 RTOS 任务编排。
-- `middleware/` 连接应用层和底层资源，包括 SD 资源门面、文本分页、Flash 历史日志、格式化工具和 FreeRTOS。
-- `drivers/` 保持底层 C 驱动边界，直接处理寄存器、时钟、GPIO、定时器、传感器和 UART。
+- `application/` 放最高层业务逻辑、语义输入到页面动作的状态机、串口命令、应用设置和 RTOS 任务编排，不直接依赖 MSP430 寄存器、物理按键或面板时序。
+- `middleware/` 连接应用层和底层资源，包括公共数据类型、系统时基配置、语义输入接口、显示服务、显示配置、SD 资源门面、文本分页、设置存储、Flash 历史日志、格式化工具和 FreeRTOS。
+- `drivers/` 保持底层 C 驱动边界，直接处理寄存器、时钟、GPIO、定时器、传感器、UART、MSP430 输入扫描和墨水屏面板时序。
 - `fatfs/` 保留 FatFs 与 SD SPI 块设备适配，应用层不直接依赖 FatFs 细节。
 
 ## 按键说明
@@ -56,7 +56,7 @@
 - S1：进入全屏 GIF 播放页面，S1/S2 和 Pad1/Pad2 在该页面切换上一个/下一个动图。
 - S2：进入 SD 卡文本阅读页面，S1/S2 和 Pad1/Pad2 在该页面翻到上一页/下一页。
 - S3：进入设置界面。
-- S4：手动执行一次全屏刷新。
+- S4：进入 Flash 历史记录界面。
 - Pad1/Pad2：主界面不执行入口动作，只作为上/下方向输入。
 
 设置选择界面：

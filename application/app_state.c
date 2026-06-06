@@ -1,45 +1,18 @@
 #include "app_state.h"
 
+#include "app_config.h"
 #include "board.h"
-
-typedef struct {
-    uint16_t magic;
-    uint16_t seq;
-    uint8_t sample_interval;
-    uint8_t alarm_duration;
-    uint8_t hourglass_seconds;
-    uint8_t reserved;
-    int16_t threshold_t10;
-    uint16_t storage_limit;
-    uint16_t crc;
-} SettingsRecord;
-
-#define SETTINGS_RECORD_COUNT       ((SETTINGS_FLASH_END - SETTINGS_FLASH_START) / sizeof(SettingsRecord)) /* Info Flash 设置区最多可保存的设置记录数。 */
+#include "settings_store.h"
 
 static uint8_t g_sample_interval = SAMPLE_INTERVAL_SECONDS;
 static uint8_t g_alarm_duration = ALARM_DURATION_SECONDS;
 static uint8_t g_hourglass_seconds = HOURGLASS_SECONDS;
 static int16_t g_threshold_t10 = ALERT_THRESHOLD_T10;
 static uint16_t g_storage_limit = STORAGE_LIMIT_DEFAULT;
-static uint16_t g_settings_next_index = 0;
-static uint16_t g_settings_next_seq = 0;
 static uint8_t g_settings_save_pending = 0;
 static uint16_t g_settings_save_request_tick = 0;
 
-#define SETTINGS_FLASH_WAIT_GUARD   1000000UL
-
-static uint8_t settings_flash_wait_ready(void)
-{
-    uint32_t guard;
-
-    guard = SETTINGS_FLASH_WAIT_GUARD;
-    while ((FCTL3 & BUSY) && guard > 0u) {
-        guard--;
-    }
-    return (uint8_t)(guard > 0u);
-}
-
-/* 将设置项调整后的数值限制在允许范围内，避免写入越界配置。 */
+/* 将设置值限制在应用允许范围内，避免写入越界配置。 */
 static long clamp_long(long value, long min_value, long max_value)
 {
     if (value < min_value) {
@@ -51,142 +24,36 @@ static long clamp_long(long value, long min_value, long max_value)
     return value;
 }
 
-/* 计算设置记录校验值，用来判断 Info Flash 中的配置是否完整有效。 */
-static uint16_t settings_crc16_update(uint16_t crc, uint8_t data)
+/* 恢复默认设置，后续再用持久化值覆盖。 */
+static void app_state_load_defaults(void)
 {
-    uint8_t bit;
-
-    crc ^= (uint16_t)data << 8;
-    for (bit = 0; bit < 8u; bit++) {
-        if (crc & 0x8000u) {
-            crc = (uint16_t)((crc << 1) ^ 0x1021u);
-        } else {
-            crc = (uint16_t)(crc << 1);
-        }
-    }
-    return crc;
+    g_sample_interval = SAMPLE_INTERVAL_SECONDS;
+    g_alarm_duration = ALARM_DURATION_SECONDS;
+    g_hourglass_seconds = HOURGLASS_SECONDS;
+    g_threshold_t10 = ALERT_THRESHOLD_T10;
+    g_storage_limit = STORAGE_LIMIT_DEFAULT;
+    g_settings_save_pending = 0;
+    g_settings_save_request_tick = 0;
 }
 
-static uint16_t settings_crc(const SettingsRecord *r)
+/* 将存储后端读出的值应用到运行状态。 */
+static void app_state_apply_settings(const SettingsStoreValue *value)
 {
-    const uint8_t *p;
-    uint8_t i;
-    uint16_t crc;
-
-    p = (const uint8_t *)r;
-    crc = 0xFFFFu;
-    for (i = 0; i < (uint8_t)(sizeof(SettingsRecord) - sizeof(r->crc)); i++) {
-        crc = settings_crc16_update(crc, p[i]);
-    }
-    return crc;
+    g_sample_interval = value->sample_interval;
+    g_alarm_duration = value->alarm_duration;
+    g_hourglass_seconds = value->hourglass_seconds;
+    g_threshold_t10 = value->threshold_t10;
+    g_storage_limit = value->storage_limit;
 }
 
-static uint16_t settings_crc_legacy(const SettingsRecord *r)
+/* 生成准备写入存储后端的当前设置快照。 */
+static void app_state_snapshot_settings(SettingsStoreValue *value)
 {
-    uint16_t crc;
-
-    crc = 0xA55Au;
-    crc ^= r->magic;
-    crc = (uint16_t)((crc << 1) | (crc >> 15));
-    crc ^= r->seq;
-    crc = (uint16_t)((crc << 1) | (crc >> 15));
-    crc ^= r->sample_interval;
-    crc = (uint16_t)((crc << 1) | (crc >> 15));
-    crc ^= r->alarm_duration;
-    crc = (uint16_t)((crc << 1) | (crc >> 15));
-    crc ^= r->hourglass_seconds;
-    crc = (uint16_t)((crc << 1) | (crc >> 15));
-    crc ^= r->reserved;
-    crc = (uint16_t)((crc << 1) | (crc >> 15));
-    crc ^= (uint16_t)r->threshold_t10;
-    crc = (uint16_t)((crc << 1) | (crc >> 15));
-    crc ^= r->storage_limit;
-    return crc;
-}
-
-/* 检查一条设置记录的标识、范围和 CRC 是否都合法。 */
-static uint8_t settings_record_valid(const SettingsRecord *r)
-{
-    if (r->magic != SETTINGS_MAGIC) {
-        return 0;
-    }
-    if (r->threshold_t10 < ALERT_THRESHOLD_MIN_T10 || r->threshold_t10 > ALERT_THRESHOLD_MAX_T10) {
-        return 0;
-    }
-    if (r->sample_interval < SAMPLE_INTERVAL_MIN_SECONDS || r->sample_interval > SAMPLE_INTERVAL_MAX_SECONDS) {
-        return 0;
-    }
-    if (r->alarm_duration < ALARM_DURATION_MIN_SECONDS || r->alarm_duration > ALARM_DURATION_MAX_SECONDS) {
-        return 0;
-    }
-    if (r->hourglass_seconds < HOURGLASS_MIN_SECONDS || r->hourglass_seconds > HOURGLASS_MAX_SECONDS) {
-        return 0;
-    }
-    if (r->storage_limit < STORAGE_LIMIT_MIN || r->storage_limit > STORAGE_LIMIT_MAX) {
-        return 0;
-    }
-    return (uint8_t)(settings_crc(r) == r->crc || settings_crc_legacy(r) == r->crc);
-}
-
-/* 擦除保存设置用的 Info Flash 段，记录区写满后从头重新写。 */
-static uint8_t settings_erase_segment(void)
-{
-    if (!settings_flash_wait_ready()) {
-        return 0;
-    }
-    __disable_interrupt();
-    FCTL3 = FWKEY;
-    FCTL1 = FWKEY | ERASE;
-    *(volatile uint16_t *)SETTINGS_FLASH_START = 0;
-    __enable_interrupt();
-    if (!settings_flash_wait_ready()) {
-        __disable_interrupt();
-        FCTL1 = FWKEY;
-        FCTL3 = FWKEY | LOCK;
-        __enable_interrupt();
-        return 0;
-    }
-    __disable_interrupt();
-    FCTL1 = FWKEY;
-    FCTL3 = FWKEY | LOCK;
-    __enable_interrupt();
-    return 1;
-}
-
-/* 向 Info Flash 指定槽位写入一条设置记录。 */
-static uint8_t settings_write_record(uint16_t index, const SettingsRecord *r)
-{
-    const uint16_t *src;
-    volatile uint16_t *dst;
-    uint8_t words;
-    uint8_t i;
-
-    src = (const uint16_t *)r;
-    dst = (volatile uint16_t *)(SETTINGS_FLASH_START + index * sizeof(SettingsRecord));
-    words = (uint8_t)(sizeof(SettingsRecord) / 2u);
-
-    if (!settings_flash_wait_ready()) {
-        return 0;
-    }
-    __disable_interrupt();
-    FCTL3 = FWKEY;
-    FCTL1 = FWKEY | WRT;
-    for (i = 0; i < words; i++) {
-        dst[i] = src[i];
-    }
-    __enable_interrupt();
-    if (!settings_flash_wait_ready()) {
-        __disable_interrupt();
-        FCTL1 = FWKEY;
-        FCTL3 = FWKEY | LOCK;
-        __enable_interrupt();
-        return 0;
-    }
-    __disable_interrupt();
-    FCTL1 = FWKEY;
-    FCTL3 = FWKEY | LOCK;
-    __enable_interrupt();
-    return 1;
+    value->sample_interval = g_sample_interval;
+    value->alarm_duration = g_alarm_duration;
+    value->hourglass_seconds = g_hourglass_seconds;
+    value->threshold_t10 = g_threshold_t10;
+    value->storage_limit = g_storage_limit;
 }
 
 /* 标记设置需要稍后保存，避开连续按键时频繁擦写 Flash。 */
@@ -198,67 +65,26 @@ static void settings_mark_save_pending(void)
 
 void app_state_init(void)
 {
-    uint16_t i;
-    const SettingsRecord *r;
+    SettingsStoreValue value;
 
-    g_threshold_t10 = ALERT_THRESHOLD_T10;
-    g_sample_interval = SAMPLE_INTERVAL_SECONDS;
-    g_alarm_duration = ALARM_DURATION_SECONDS;
-    g_hourglass_seconds = HOURGLASS_SECONDS;
-    g_storage_limit = STORAGE_LIMIT_DEFAULT;
-    g_settings_next_index = 0;
-    g_settings_next_seq = 0;
-
-    for (i = 0; i < SETTINGS_RECORD_COUNT; i++) {
-        r = (const SettingsRecord *)(SETTINGS_FLASH_START + i * sizeof(SettingsRecord));
-        if (r->magic == 0xFFFFu) {
-            g_settings_next_index = i;
-            return;
-        }
-        if (!settings_record_valid(r)) {
-            g_settings_next_index = SETTINGS_RECORD_COUNT;
-            return;
-        }
-        g_threshold_t10 = r->threshold_t10;
-        g_sample_interval = r->sample_interval;
-        g_alarm_duration = r->alarm_duration;
-        g_hourglass_seconds = r->hourglass_seconds;
-        g_storage_limit = r->storage_limit;
-        g_settings_next_index = (uint16_t)(i + 1u);
-        g_settings_next_seq = (uint16_t)(r->seq + 1u);
+    app_state_load_defaults();
+    if (settings_store_load(&value)) {
+        app_state_apply_settings(&value);
     }
 }
 
 void app_save_settings(void)
 {
-    SettingsRecord r;
+    SettingsStoreValue value;
 
     if (!g_settings_save_pending) {
         return;
     }
 
-    r.magic = SETTINGS_MAGIC;
-    r.seq = g_settings_next_seq;
-    r.sample_interval = g_sample_interval;
-    r.alarm_duration = g_alarm_duration;
-    r.hourglass_seconds = g_hourglass_seconds;
-    r.reserved = 0;
-    r.threshold_t10 = g_threshold_t10;
-    r.storage_limit = g_storage_limit;
-    r.crc = settings_crc(&r);
-
-    if (g_settings_next_index >= SETTINGS_RECORD_COUNT) {
-        if (!settings_erase_segment()) {
-            return;
-        }
-        g_settings_next_index = 0;
+    app_state_snapshot_settings(&value);
+    if (settings_store_save(&value)) {
+        g_settings_save_pending = 0;
     }
-    if (!settings_write_record(g_settings_next_index, &r)) {
-        return;
-    }
-    g_settings_next_index++;
-    g_settings_next_seq++;
-    g_settings_save_pending = 0;
 }
 
 void app_state_task(void)

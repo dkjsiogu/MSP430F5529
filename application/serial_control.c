@@ -1,5 +1,6 @@
-#include "serial_control.h"
+﻿#include "serial_control.h"
 
+#include "app_config.h"
 #include "app_resources.h"
 #include "app_state.h"
 #include "board.h"
@@ -26,7 +27,7 @@ void serial_control_set_flash_erase_handler(SerialFlashEraseHandler handler)
     g_flash_erase_handler = handler;
 }
 
-/* 解析串口收到的单字符命令，并映射为本地显示或设置动作。 */
+/* 瑙ｆ瀽涓插彛鏀跺埌鐨勫崟瀛楃鍛戒护锛屽苟鏄犲皠涓烘湰鍦版樉绀烘垨璁剧疆鍔ㄤ綔銆?*/
 static void handle_rx_char(uint8_t cmd)
 {
     uint16_t count;
@@ -47,7 +48,7 @@ static void handle_rx_char(uint8_t cmd)
             epd_show_history_page(0);
             break;
         }
-        g_history_page = (uint16_t)(g_history_page + HISTORY_ROWS_ON_EPD);
+        g_history_page = (uint16_t)(g_history_page + HISTORY_PAGE_ROWS);
         if (g_history_page >= count) {
             g_history_page = 0;
         }

@@ -16,6 +16,7 @@ static TempSample g_pending_log_sample;
 static uint8_t g_has_latest_sample = 0;
 static uint8_t g_log_pending = 0;
 static uint8_t g_flash_erase_pending = 0;
+static uint8_t g_sample_elapsed_seconds = 0;
 static application::tasks::Notifications g_notifications = {0, 0, 0};
 
 /* 把毫秒延时换算成 FreeRTOS tick，向上取整避免延时为 0。 */
@@ -47,9 +48,7 @@ void delay_ms(uint16_t ms)
         return;
     }
     if (ms < RTOS_DELAY_YIELD_MS) {
-        while (ms--) {
-            __delay_cycles(MCLK_HZ / 1000u);
-        }
+        board_busy_delay_ms(ms);
         return;
     }
     vTaskDelay(rtos_ticks_from_ms(ms));
@@ -132,6 +131,27 @@ static void flash_erase_request(void)
     notify(g_notifications.flash);
 }
 
+/* 将板级周期/强制事件转换成应用采样决策，采样间隔只在应用任务层读取。 */
+static uint8_t sample_due_should_collect(uint8_t due_flags)
+{
+    if (due_flags & SAMPLE_TIMER_DUE_FORCED) {
+        g_sample_elapsed_seconds = 0;
+        return 1;
+    }
+
+    if (due_flags & SAMPLE_TIMER_DUE_PERIODIC) {
+        if (g_sample_elapsed_seconds < 250u) {
+            g_sample_elapsed_seconds++;
+        }
+        if (g_sample_elapsed_seconds >= app_sample_interval()) {
+            g_sample_elapsed_seconds = 0;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 namespace application {
 namespace tasks {
 
@@ -148,7 +168,7 @@ void control(void *argument)
     (void)argument;
     for (;;) {
         has_sample = latest_sample_load(&sample);
-        buttons_task(&sample, has_sample);
+        interaction_task(&sample, has_sample);
         serial_control_poll();
 
         if (epd_render_pending()) {
@@ -163,10 +183,12 @@ void control(void *argument)
 void sample(void *argument)
 {
     TempSample sample;
+    uint8_t due_flags;
 
     (void)argument;
     for (;;) {
-        if (sample_timer_take_due()) {
+        due_flags = sample_timer_take_due();
+        if (sample_due_should_collect(due_flags)) {
             collect_sample(&sample);
             latest_sample_store(&sample);
             board_toggle_heartbeat();

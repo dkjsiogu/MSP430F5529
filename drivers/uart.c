@@ -1,5 +1,7 @@
 #include "uart.h"
 
+#include "platform_config.h"
+
 static volatile uint8_t g_uart_rx_char = 0;
 static UartIsrWakeHook g_uart_rx_hook = 0;
 

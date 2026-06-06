@@ -1,5 +1,6 @@
 #include "sensors.h"
 #include "board.h"
+#include "platform_config.h"
 
 #define TMP421_REG_LOCAL_MSB        0x00 /* TMP421 本地温度整数部分寄存器。 */
 #define TMP421_REG_CONFIG1_WRITE    0x09 /* TMP421 配置寄存器写地址。 */

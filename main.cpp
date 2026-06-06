@@ -1,3 +1,5 @@
+#include <msp430.h>
+
 #include "middleware/CBindings.hpp"
 #include "application/rtos_tasks.hpp"
 #include "middleware/freertos/StaticThread.hpp"
@@ -33,7 +35,7 @@ int main()
     clock_init();
     app_state_init();
     gpio_init();
-    buttons_init();
+    input_init();
     uart_init();
     sensors_init();
     flash_scan();
@@ -54,7 +56,7 @@ int main()
 
     application::tasks::bind_notifications(task_notifications);
     board_set_delay_hook(application::tasks::delay_ms);
-    buttons_set_wake_hook(control_thread.notify_from_isr_hook());
+    input_set_wake_hook(control_thread.notify_from_isr_hook());
     uart_set_rx_hook(control_thread.notify_from_isr_hook());
     sample_timer_set_due_hook(sample_thread.notify_from_isr_hook());
     serial_control_set_flash_erase_handler(application::tasks::request_flash_erase);

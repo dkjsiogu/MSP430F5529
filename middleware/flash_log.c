@@ -1,7 +1,9 @@
 #include "flash_log.h"
 
+#include "app_config.h"
 #include "app_state.h"
 #include "format.h"
+#include "platform_config.h"
 
 #define FLASH_RECORD_COUNT          ((FLASH_LOG_END - FLASH_LOG_START) / sizeof(TempRecord)) /* Flash 历史记录区最多能容纳的温度记录数。 */
 

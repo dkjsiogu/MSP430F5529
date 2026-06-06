@@ -1,8 +1,8 @@
 #include "board.h"
-#include "app_state.h"
+#include "platform_config.h"
+#include "system_config.h"
 
-static volatile uint8_t g_sample_due = 1;
-static volatile uint8_t g_second_count = 0;
+static volatile uint8_t g_sample_due_flags = SAMPLE_TIMER_DUE_FORCED;
 static volatile uint8_t g_subsecond_ticks = 0;
 static volatile uint16_t g_tick_10ms = 0;
 static volatile uint8_t g_buzzer_alarm_seconds = 0;
@@ -93,7 +93,7 @@ static void pmm_set_vcore(uint8_t target_level)
     }
 }
 
-static void board_busy_delay_ms(uint16_t ms)
+void board_busy_delay_ms(uint16_t ms)
 {
     while (ms--) {
         __delay_cycles(MCLK_HZ / 1000u);
@@ -220,16 +220,16 @@ void sample_timer_set_due_hook(BoardIsrWakeHook hook)
 
 uint8_t sample_timer_take_due(void)
 {
-    uint8_t due;
+    uint8_t due_flags;
 
-    due = g_sample_due;
-    g_sample_due = 0;
-    return due;
+    due_flags = g_sample_due_flags;
+    g_sample_due_flags = 0;
+    return due_flags;
 }
 
 void sample_timer_force_due(void)
 {
-    g_sample_due = 1;
+    g_sample_due_flags |= SAMPLE_TIMER_DUE_FORCED;
 }
 
 uint16_t board_tick10(void)
@@ -258,13 +258,9 @@ __interrupt void TIMER0_A0_ISR(void)
             }
         }
 
-        g_second_count++;
-        if (g_second_count >= app_sample_interval()) {
-            g_second_count = 0;
-            g_sample_due = 1;
-            if (g_sample_due_hook != 0) {
-                g_sample_due_hook();
-            }
+        g_sample_due_flags |= SAMPLE_TIMER_DUE_PERIODIC;
+        if (g_sample_due_hook != 0) {
+            g_sample_due_hook();
         }
     }
 

@@ -1,6 +1,6 @@
 #include "captouch.h"
 
-#include "app_config.h"
+#include "platform_config.h"
 
 static uint16_t g_captouch_baseline[CAP_TOUCH_CHANNEL_COUNT];
 static uint8_t g_captouch_pressed_mask = 0;

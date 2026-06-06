@@ -15,7 +15,7 @@
  * ---------------------------------------------------------------------------*/
 
 #include <intrinsics.h>                                                 /* Include MSP430-specific intrincs */
-#include "app_config.h"
+#include "platform_config.h"
 #include "diskio.h"                                                     /* Common include file for FatFs and disk I/O layer */
 #include "HAL_SDCard.h"                                                 /* MSP-EXP430F5529 specific SD Card driver */
 

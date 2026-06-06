@@ -4,7 +4,7 @@
  * 供 FatFs 的 mmc.c 完成 SDHC/FAT32 扇区读写。
  */
 #include "HAL_SDCard.h"
-#include "app_config.h"
+#include "platform_config.h"
 
 #define SD_SPI_SIMO_BIT          BIT1      /* UCB1SIMO 对应 P4.1。 */
 #define SD_SPI_SOMI_BIT          BIT2      /* UCB1SOMI 对应 P4.2。 */
