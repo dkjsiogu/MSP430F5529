@@ -5,43 +5,20 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#define CONTROL_TASK_STACK_WORDS       96u
-#define SAMPLE_TASK_STACK_WORDS        112u
-#define DISPLAY_TASK_STACK_WORDS       192u
-#define FLASH_TASK_STACK_WORDS         112u
-
-#define CONTROL_TASK_PRIORITY          2u
-#define SAMPLE_TASK_PRIORITY           2u
-#define DISPLAY_TASK_PRIORITY          1u
-#define FLASH_TASK_PRIORITY            1u
-
 #define CONTROL_WAIT_MS                20u
 #define SAMPLE_WAIT_MS                 20u
 #define DISPLAY_WAIT_MS                50u
 #define FLASH_WAIT_MS                  100u
 #define RTOS_DELAY_YIELD_MS            10u
 
-static StaticTask_t g_control_task_tcb;
-static StaticTask_t g_sample_task_tcb;
-static StaticTask_t g_display_task_tcb;
-static StaticTask_t g_flash_task_tcb;
-
-static StackType_t g_control_task_stack[CONTROL_TASK_STACK_WORDS];
-static StackType_t g_sample_task_stack[SAMPLE_TASK_STACK_WORDS];
-static StackType_t g_display_task_stack[DISPLAY_TASK_STACK_WORDS];
-static StackType_t g_flash_task_stack[FLASH_TASK_STACK_WORDS];
-
-static TaskHandle_t g_control_task_handle = 0;
-static TaskHandle_t g_sample_task_handle = 0;
-static TaskHandle_t g_display_task_handle = 0;
-static TaskHandle_t g_flash_task_handle = 0;
-
 static TempSample g_latest_sample;
 static TempSample g_pending_log_sample;
 static uint8_t g_has_latest_sample = 0;
 static uint8_t g_log_pending = 0;
 static uint8_t g_flash_erase_pending = 0;
+static application::tasks::Notifications g_notifications = {0, 0, 0};
 
+/* 把毫秒延时换算成 FreeRTOS tick，向上取整避免延时为 0。 */
 static TickType_t rtos_ticks_from_ms(uint16_t ms)
 {
     uint32_t ticks;
@@ -53,7 +30,18 @@ static TickType_t rtos_ticks_from_ms(uint16_t ms)
     return (TickType_t)ticks;
 }
 
-static void rtos_delay_ms(uint16_t ms)
+/* 调用已绑定的任务通知回调，允许通知端口未绑定时安全跳过。 */
+static void notify(application::tasks::NotifyHook hook)
+{
+    if (hook != 0) {
+        hook();
+    }
+}
+
+namespace application {
+namespace tasks {
+
+void delay_ms(uint16_t ms)
 {
     if (ms == 0) {
         return;
@@ -67,35 +55,15 @@ static void rtos_delay_ms(uint16_t ms)
     vTaskDelay(rtos_ticks_from_ms(ms));
 }
 
-static void notify_task(TaskHandle_t task)
+void bind_notifications(const Notifications &notifications)
 {
-    if (task != 0) {
-        (void)xTaskNotifyGive(task);
-    }
+    g_notifications = notifications;
 }
 
-static void notify_task_from_isr(TaskHandle_t task)
-{
-    BaseType_t higher_priority_woken;
-
-    if (task == 0) {
-        return;
-    }
-    higher_priority_woken = pdFALSE;
-    vTaskNotifyGiveFromISR(task, &higher_priority_woken);
-    portYIELD_FROM_ISR(higher_priority_woken);
+}
 }
 
-static void control_wake_from_isr(void)
-{
-    notify_task_from_isr(g_control_task_handle);
-}
-
-static void sample_due_from_isr(void)
-{
-    notify_task_from_isr(g_sample_task_handle);
-}
-
+/* 保存最新采样值，供控制任务读取并参与按键页面状态机。 */
 static void latest_sample_store(const TempSample *sample)
 {
     taskENTER_CRITICAL();
@@ -104,6 +72,7 @@ static void latest_sample_store(const TempSample *sample)
     taskEXIT_CRITICAL();
 }
 
+/* 读取最新采样值，返回当前是否已经采到有效样本。 */
 static uint8_t latest_sample_load(TempSample *sample)
 {
     uint8_t has_sample;
@@ -117,15 +86,17 @@ static uint8_t latest_sample_load(TempSample *sample)
     return has_sample;
 }
 
+/* 把采样任务生成的样本提交给 Flash 任务异步写入。 */
 static void flash_log_request(const TempSample *sample)
 {
     taskENTER_CRITICAL();
     g_pending_log_sample = *sample;
     g_log_pending = 1;
     taskEXIT_CRITICAL();
-    notify_task(g_flash_task_handle);
+    notify(g_notifications.flash);
 }
 
+/* Flash 任务取走一条待写入样本，取走后清除 pending 标志。 */
 static uint8_t flash_log_take(TempSample *sample)
 {
     uint8_t pending;
@@ -140,14 +111,7 @@ static uint8_t flash_log_take(TempSample *sample)
     return pending;
 }
 
-static void flash_erase_request(void)
-{
-    taskENTER_CRITICAL();
-    g_flash_erase_pending = 1;
-    taskEXIT_CRITICAL();
-    notify_task(g_flash_task_handle);
-}
-
+/* Flash 任务取走一次擦除请求，取走后清除 pending 标志。 */
 static uint8_t flash_erase_take(void)
 {
     uint8_t pending;
@@ -159,7 +123,24 @@ static uint8_t flash_erase_take(void)
     return pending;
 }
 
-static void control_task(void *argument)
+/* 设置 Flash 擦除请求，并唤醒 Flash 任务执行耗时操作。 */
+static void flash_erase_request(void)
+{
+    taskENTER_CRITICAL();
+    g_flash_erase_pending = 1;
+    taskEXIT_CRITICAL();
+    notify(g_notifications.flash);
+}
+
+namespace application {
+namespace tasks {
+
+void request_flash_erase()
+{
+    flash_erase_request();
+}
+
+void control(void *argument)
 {
     TempSample sample;
     uint8_t has_sample;
@@ -171,15 +152,15 @@ static void control_task(void *argument)
         serial_control_poll();
 
         if (epd_render_pending()) {
-            notify_task(g_display_task_handle);
+            notify(g_notifications.display);
         }
-        notify_task(g_sample_task_handle);
+        notify(g_notifications.sample);
 
         (void)ulTaskNotifyTake(pdTRUE, rtos_ticks_from_ms(CONTROL_WAIT_MS));
     }
 }
 
-static void sample_task(void *argument)
+void sample(void *argument)
 {
     TempSample sample;
 
@@ -198,7 +179,7 @@ static void sample_task(void *argument)
 
             if (epd_auto_enabled()) {
                 epd_show_current_auto(&sample);
-                notify_task(g_display_task_handle);
+                notify(g_notifications.display);
             }
 
             flash_log_request(&sample);
@@ -208,7 +189,7 @@ static void sample_task(void *argument)
     }
 }
 
-static void display_task(void *argument)
+void display(void *argument)
 {
     (void)argument;
     for (;;) {
@@ -217,7 +198,7 @@ static void display_task(void *argument)
     }
 }
 
-static void flash_task(void *argument)
+void flash(void *argument)
 {
     TempSample sample;
 
@@ -226,7 +207,7 @@ static void flash_task(void *argument)
         if (flash_erase_take()) {
             flash_erase_log();
             epd_show_history_page(0);
-            notify_task(g_display_task_handle);
+            notify(g_notifications.display);
         }
         if (flash_log_take(&sample)) {
             flash_log_sample(&sample);
@@ -237,40 +218,5 @@ static void flash_task(void *argument)
     }
 }
 
-void app_tasks_create(void)
-{
-    g_control_task_handle = xTaskCreateStatic(control_task, "ctrl",
-                                             CONTROL_TASK_STACK_WORDS, 0,
-                                             CONTROL_TASK_PRIORITY,
-                                             g_control_task_stack,
-                                             &g_control_task_tcb);
-    g_sample_task_handle = xTaskCreateStatic(sample_task, "sample",
-                                            SAMPLE_TASK_STACK_WORDS, 0,
-                                            SAMPLE_TASK_PRIORITY,
-                                            g_sample_task_stack,
-                                            &g_sample_task_tcb);
-    g_display_task_handle = xTaskCreateStatic(display_task, "display",
-                                             DISPLAY_TASK_STACK_WORDS, 0,
-                                             DISPLAY_TASK_PRIORITY,
-                                             g_display_task_stack,
-                                             &g_display_task_tcb);
-    g_flash_task_handle = xTaskCreateStatic(flash_task, "flash",
-                                           FLASH_TASK_STACK_WORDS, 0,
-                                           FLASH_TASK_PRIORITY,
-                                           g_flash_task_stack,
-                                           &g_flash_task_tcb);
-
-    configASSERT(g_control_task_handle != 0);
-    configASSERT(g_sample_task_handle != 0);
-    configASSERT(g_display_task_handle != 0);
-    configASSERT(g_flash_task_handle != 0);
 }
-
-void app_tasks_install_hooks(void)
-{
-    board_set_delay_hook(rtos_delay_ms);
-    buttons_set_wake_hook(control_wake_from_isr);
-    uart_set_rx_hook(control_wake_from_isr);
-    sample_timer_set_due_hook(sample_due_from_isr);
-    serial_control_set_flash_erase_handler(flash_erase_request);
 }
