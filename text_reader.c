@@ -9,11 +9,13 @@
 
 #define TEXT_READER_MARGIN_X        2u                   /* 阅读页左侧留白，单位像素。 */
 
+#pragma DATA_SECTION(g_text_items, ".bss:usbram")
 static TextReaderItem g_text_items[TEXT_READER_MAX_ITEMS];
 static uint8_t g_text_item_count = 0;
 static uint32_t g_text_page_offset = 0;
 static uint32_t g_text_next_offset = 0;
 static uint32_t g_text_file_size = 0;
+#pragma DATA_SECTION(g_text_prev_offsets, ".bss:usbram")
 static uint32_t g_text_prev_offsets[TEXT_READER_HISTORY_DEPTH];
 static uint8_t g_text_prev_count = 0;
 

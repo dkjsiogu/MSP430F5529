@@ -1,0 +1,42 @@
+{
+    "configurations": [
+        {
+            "name": "MSP430F5529 CCS",
+            "includePath": [
+                "${workspaceFolder}",
+                "${workspaceFolder}/application",
+                "${workspaceFolder}/middleware",
+                "${workspaceFolder}/middleware/freertos",
+                "${workspaceFolder}/middleware/freertos/FreeRTOS-Kernel/include",
+                "${workspaceFolder}/middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X",
+                "${workspaceFolder}/drivers",
+                "${workspaceFolder}/fatfs",
+                "D:/ccs/ccs/ccs_base/msp430/include",
+                "D:/ccs/ccs/tools/compiler/ti-cgt-msp430_21.6.1.LTS/include"
+            ],
+            "defines": [
+                "__MSP430F5529__"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "${workspaceFolder}/application",
+                    "${workspaceFolder}/middleware",
+                    "${workspaceFolder}/middleware/freertos",
+                    "${workspaceFolder}/middleware/freertos/FreeRTOS-Kernel/include",
+                    "${workspaceFolder}/middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X",
+                    "${workspaceFolder}/drivers",
+                    "${workspaceFolder}/fatfs",
+                    "D:/ccs/ccs/ccs_base/msp430/include",
+                    "D:/ccs/ccs/tools/compiler/ti-cgt-msp430_21.6.1.LTS/include"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "compilerPath": "",
+            "intelliSenseMode": "windows-msvc-x86",
+            "cStandard": "c99",
+            "cppStandard": "c++03"
+        }
+    ],
+    "version": 4
+}

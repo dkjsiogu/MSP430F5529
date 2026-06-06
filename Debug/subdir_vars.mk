@@ -5,6 +5,13 @@
 SHELL = cmd.exe
 
 # Add inputs and outputs from these tool invocations to the build variables 
+CPP_SRCS += \
+../application/FirmwareApp.cpp \
+../main.cpp
+
+ASM_SRCS += \
+../middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X/portext.asm
+
 CMD_SRCS += \
 ../lnk_msp430f5529.cmd 
 
@@ -16,12 +23,15 @@ C_SRCS += \
 ../epaper.c \
 ../flash_log.c \
 ../format.c \
-../main.c \
 ../sd_assets.c \
 ../sensors.c \
 ../serial_control.c \
 ../text_reader.c \
-../uart.c 
+../uart.c \
+../middleware/freertos/rtos_hooks.c \
+../middleware/freertos/FreeRTOS-Kernel/list.c \
+../middleware/freertos/FreeRTOS-Kernel/tasks.c \
+../middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X/port.c
 
 C_DEPS += \
 ./app_resources.d \
@@ -31,12 +41,15 @@ C_DEPS += \
 ./epaper.d \
 ./flash_log.d \
 ./format.d \
-./main.d \
 ./sd_assets.d \
 ./sensors.d \
 ./serial_control.d \
 ./text_reader.d \
-./uart.d 
+./uart.d \
+./rtos_hooks.d \
+./list.d \
+./tasks.d \
+./port.d
 
 OBJS += \
 ./app_resources.obj \
@@ -46,12 +59,22 @@ OBJS += \
 ./epaper.obj \
 ./flash_log.obj \
 ./format.obj \
+./FirmwareApp.obj \
 ./main.obj \
 ./sd_assets.obj \
 ./sensors.obj \
 ./serial_control.obj \
 ./text_reader.obj \
-./uart.obj 
+./uart.obj \
+./rtos_hooks.obj \
+./list.obj \
+./tasks.obj \
+./port.obj \
+./portext.obj
+
+CPP_DEPS += \
+./FirmwareApp.d \
+./main.d
 
 OBJS__QUOTED += \
 "app_resources.obj" \
@@ -61,12 +84,18 @@ OBJS__QUOTED += \
 "epaper.obj" \
 "flash_log.obj" \
 "format.obj" \
+"FirmwareApp.obj" \
 "main.obj" \
 "sd_assets.obj" \
 "sensors.obj" \
 "serial_control.obj" \
 "text_reader.obj" \
-"uart.obj" 
+"uart.obj" \
+"rtos_hooks.obj" \
+"list.obj" \
+"tasks.obj" \
+"port.obj" \
+"portext.obj"
 
 C_DEPS__QUOTED += \
 "app_resources.d" \
@@ -76,12 +105,19 @@ C_DEPS__QUOTED += \
 "epaper.d" \
 "flash_log.d" \
 "format.d" \
-"main.d" \
 "sd_assets.d" \
 "sensors.d" \
 "serial_control.d" \
 "text_reader.d" \
-"uart.d" 
+"uart.d" \
+"rtos_hooks.d" \
+"list.d" \
+"tasks.d" \
+"port.d"
+
+CPP_DEPS__QUOTED += \
+"FirmwareApp.d" \
+"main.d"
 
 C_SRCS__QUOTED += \
 "../app_resources.c" \
@@ -91,11 +127,18 @@ C_SRCS__QUOTED += \
 "../epaper.c" \
 "../flash_log.c" \
 "../format.c" \
-"../main.c" \
 "../sd_assets.c" \
 "../sensors.c" \
 "../serial_control.c" \
 "../text_reader.c" \
-"../uart.c" 
+"../uart.c" \
+"../middleware/freertos/rtos_hooks.c" \
+"../middleware/freertos/FreeRTOS-Kernel/list.c" \
+"../middleware/freertos/FreeRTOS-Kernel/tasks.c" \
+"../middleware/freertos/FreeRTOS-Kernel/portable/CCS/MSP430X/port.c"
+
+CPP_SRCS__QUOTED += \
+"../application/FirmwareApp.cpp" \
+"../main.cpp"
 
 

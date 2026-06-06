@@ -137,6 +137,7 @@ MEMORY
 
 SECTIONS
 {
+    .bss:usbram : {} > USBRAM             /* Large non-ISR buffers moved out of main RAM */
     .bss        : {} > RAM                  /* Global & static vars              */
     .data       : {} > RAM                  /* Global & static vars              */
     .TI.noinit  : {} > RAM                  /* For #pragma noinit                */

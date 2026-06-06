@@ -57,8 +57,11 @@
 #define SD_ASSET_ERR_READ           5u               /* 读取资源数据失败。 */
 #define SD_ASSET_ERR_WRITE          6u               /* 写入探针文件失败。 */
 
+#pragma DATA_SECTION(g_sd_fs, ".bss:usbram")
 static FATFS g_sd_fs;
+#pragma DATA_SECTION(g_asset_file, ".bss:usbram")
 static FIL g_asset_file;
+#pragma DATA_SECTION(g_image_info, ".bss:usbram")
 static SdImageInfo g_image_info[SD_ASSET_IMAGE_SLOT_COUNT];
 static uint16_t g_font_width[SD_ASSET_FONT_SLOT_COUNT];
 static uint16_t g_font_height[SD_ASSET_FONT_SLOT_COUNT];
@@ -66,6 +69,7 @@ static uint16_t g_font_stride[SD_ASSET_FONT_SLOT_COUNT];
 static uint16_t g_font_count[SD_ASSET_FONT_SLOT_COUNT];
 static uint16_t g_font_entry_size[SD_ASSET_FONT_SLOT_COUNT];
 static uint16_t g_font_header_size[SD_ASSET_FONT_SLOT_COUNT];
+#pragma DATA_SECTION(g_font_lookup_offset, ".bss:usbram")
 static uint32_t g_font_lookup_offset[SD_ASSET_FONT_SLOT_COUNT];
 static uint8_t g_font_version[SD_ASSET_FONT_SLOT_COUNT];
 static uint8_t g_sd_mounted = 0;
@@ -73,12 +77,17 @@ static uint8_t g_assets_loaded = 0;
 static uint8_t g_asset_open = 0;
 static uint8_t g_asset_open_type = 0;
 static uint8_t g_asset_open_id = 0;
+#pragma DATA_SECTION(g_image_ready, ".bss:usbram")
 static uint8_t g_image_ready[SD_ASSET_IMAGE_SLOT_COUNT];
 static uint8_t g_font_ready[SD_ASSET_FONT_SLOT_COUNT];
 static uint8_t g_last_error = SD_ASSET_ERR_NONE;
+#pragma DATA_SECTION(g_image_path, ".bss:usbram")
 static char g_image_path[SD_ASSET_IMAGE_SLOT_COUNT][SD_ASSET_PATH_LEN];
+#pragma DATA_SECTION(g_font24_path, ".bss:usbram")
 static char g_font24_path[SD_ASSET_PATH_LEN];
+#pragma DATA_SECTION(g_book_path, ".bss:usbram")
 static char g_book_path[SD_ASSET_PATH_LEN];
+#pragma DATA_SECTION(g_font16_path, ".bss:usbram")
 static char g_font16_path[SD_ASSET_PATH_LEN];
 
 static const uint8_t g_gif_image_ids[] = {

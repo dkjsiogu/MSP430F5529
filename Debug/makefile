@@ -17,12 +17,18 @@ ORDERED_OBJS += \
 "./epaper.obj" \
 "./flash_log.obj" \
 "./format.obj" \
+"./FirmwareApp.obj" \
 "./main.obj" \
 "./sd_assets.obj" \
 "./sensors.obj" \
 "./serial_control.obj" \
 "./text_reader.obj" \
 "./uart.obj" \
+"./rtos_hooks.obj" \
+"./list.obj" \
+"./tasks.obj" \
+"./port.obj" \
+"./portext.obj" \
 "./fatfs/HAL_SDCard.obj" \
 "./fatfs/ff.obj" \
 "./fatfs/mmc.obj" \
@@ -145,15 +151,16 @@ all: $(OBJS) $(CMD_SRCS) $(GEN_CMDS)
 # Tool invocations
 1.\ LED.out: $(OBJS) $(CMD_SRCS) $(GEN_CMDS)
 	@echo 'MSP430 Linker - building target: "$@"'
-	"D:/ccs/ccs/tools/compiler/ti-cgt-msp430_21.6.1.LTS/bin/cl430" -vmspx --data_model=restricted --use_hw_mpy=F5 --advice:power=all --define=__MSP430F5529__ -g --printf_support=minimal --diag_warning=225 --diag_wrap=off --display_error_number --silicon_errata=CPU21 --silicon_errata=CPU22 --silicon_errata=CPU23 --silicon_errata=CPU40 -z -m"1. LED.map" --heap_size=160 --stack_size=384 --cinit_hold_wdt=on -i"D:/ccs/ccs/ccs_base/msp430/include" -i"D:/ccs/ccs/ccs_base/msp430/lib/5xx_6xx_FRxx" -i"D:/ccs/ccs/tools/compiler/ti-cgt-msp430_21.6.1.LTS/lib" -i"D:/ccs/ccs/tools/compiler/ti-cgt-msp430_21.6.1.LTS/include" --reread_libs --diag_wrap=off --display_error_number --warn_sections --xml_link_info="1. LED_linkInfo.xml" --use_hw_mpy=F5 --rom_model -o "1. LED.out" $(ORDERED_OBJS)
+	"D:/ccs/ccs/tools/compiler/ti-cgt-msp430_21.6.1.LTS/bin/cl430" -vmspx --data_model=restricted --use_hw_mpy=F5 --advice:power=all --define=__MSP430F5529__ -g --printf_support=minimal --diag_warning=225 --diag_wrap=off --display_error_number --silicon_errata=CPU21 --silicon_errata=CPU22 --silicon_errata=CPU23 --silicon_errata=CPU40 -z -m"1. LED.map" --heap_size=0 --stack_size=256 --cinit_hold_wdt=on -i"D:/ccs/ccs/ccs_base/msp430/include" -i"D:/ccs/ccs/ccs_base/msp430/lib/5xx_6xx_FRxx" -i"D:/ccs/ccs/tools/compiler/ti-cgt-msp430_21.6.1.LTS/lib" -i"D:/ccs/ccs/tools/compiler/ti-cgt-msp430_21.6.1.LTS/include" --reread_libs --diag_wrap=off --display_error_number --warn_sections --unused_section_elimination=on --xml_link_info="1. LED_linkInfo.xml" --use_hw_mpy=F5 --rom_model -o "1. LED.out" $(ORDERED_OBJS)
 	@echo 'Finished building target: "$@"'
 	@echo ' '
 
 # Other Targets
 clean:
 	-$(RM) $(EXE_OUTPUTS__QUOTED)
-	-$(RM) "app_resources.obj" "app_state.obj" "board.obj" "buttons.obj" "epaper.obj" "flash_log.obj" "format.obj" "main.obj" "sd_assets.obj" "sensors.obj" "serial_control.obj" "text_reader.obj" "uart.obj" "fatfs\HAL_SDCard.obj" "fatfs\ff.obj" "fatfs\mmc.obj"
-	-$(RM) "app_resources.d" "app_state.d" "board.d" "buttons.d" "epaper.d" "flash_log.d" "format.d" "main.d" "sd_assets.d" "sensors.d" "serial_control.d" "text_reader.d" "uart.d" "fatfs\HAL_SDCard.d" "fatfs\ff.d" "fatfs\mmc.d"
+	-$(RM) "app_resources.obj" "app_state.obj" "board.obj" "buttons.obj" "epaper.obj" "flash_log.obj" "format.obj" "FirmwareApp.obj" "main.obj" "sd_assets.obj" "sensors.obj" "serial_control.obj" "text_reader.obj" "uart.obj" "rtos_hooks.obj" "list.obj" "tasks.obj" "port.obj" "portext.obj" "fatfs\HAL_SDCard.obj" "fatfs\ff.obj" "fatfs\mmc.obj"
+	-$(RM) "app_resources.d" "app_state.d" "board.d" "buttons.d" "epaper.d" "flash_log.d" "format.d" "sd_assets.d" "sensors.d" "serial_control.d" "text_reader.d" "uart.d" "rtos_hooks.d" "list.d" "tasks.d" "port.d" "fatfs\HAL_SDCard.d" "fatfs\ff.d" "fatfs\mmc.d"
+	-$(RM) "FirmwareApp.d" "main.d"
 	-@echo ' '
 
 .PHONY: all clean dependents
