@@ -21,6 +21,19 @@
 #define SD_INIT_DIVIDER          ((uint16_t)(SMCLK_HZ / 400000UL)) /* 初始化阶段 SPI 分频，约 400kHz。 */
 #define SD_FAST_DIVIDER          4u        /* 正常读写阶段 SPI 分频，16MHz/4=4MHz。 */
 
+#define SD_SPI_WAIT_LIMIT        60000u
+
+static uint8_t SDCard_waitFlag(uint8_t flag)
+{
+    uint16_t guard;
+
+    guard = SD_SPI_WAIT_LIMIT;
+    while (!(UCB1IFG & flag) && guard > 0u) {
+        guard--;
+    }
+    return (uint8_t)((UCB1IFG & flag) != 0u);
+}
+
 unsigned char SDCard_init(void)
 {
     SD_SPI_DIR |= SD_SPI_CLK_BIT | SD_SPI_SIMO_BIT;
@@ -51,32 +64,34 @@ void SDCard_fastMode(void)
     UCB1CTL1 &= (uint8_t)~UCSWRST;
 }
 
-void SDCard_readFrame(uint8_t *pBuffer, uint16_t size)
+uint8_t SDCard_readFrame(uint8_t *pBuffer, uint16_t size)
 {
     while (size--) {
-        while (!(UCB1IFG & UCTXIFG)) {
-            ;
+        if (!SDCard_waitFlag(UCTXIFG)) {
+            return 0;
         }
         UCB1TXBUF = 0xFFu;
-        while (!(UCB1IFG & UCRXIFG)) {
-            ;
+        if (!SDCard_waitFlag(UCRXIFG)) {
+            return 0;
         }
         *pBuffer++ = UCB1RXBUF;
     }
+    return 1;
 }
 
-void SDCard_sendFrame(uint8_t *pBuffer, uint16_t size)
+uint8_t SDCard_sendFrame(const uint8_t *pBuffer, uint16_t size)
 {
     while (size--) {
-        while (!(UCB1IFG & UCTXIFG)) {
-            ;
+        if (!SDCard_waitFlag(UCTXIFG)) {
+            return 0;
         }
         UCB1TXBUF = *pBuffer++;
-        while (!(UCB1IFG & UCRXIFG)) {
-            ;
+        if (!SDCard_waitFlag(UCRXIFG)) {
+            return 0;
         }
         (void)UCB1RXBUF;
     }
+    return 1;
 }
 
 void SDCard_setCSHigh(void)

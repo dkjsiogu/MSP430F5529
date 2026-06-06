@@ -110,12 +110,12 @@ BYTE CardType;                                                          /* b0:MM
  */
 
 static
-void xmit_mmc (
+int xmit_mmc (
     const BYTE* buff,                                                   /* Data to be sent */
     UINT bc                                                             /* Number of bytes to send */
     )
 {
-    SDCard_sendFrame((uint8_t *)buff, bc);
+    return SDCard_sendFrame((const uint8_t *)buff, bc);
 }
 
 /*
@@ -125,12 +125,12 @@ void xmit_mmc (
  */
 
 static
-void rcvr_mmc (
+int rcvr_mmc (
     BYTE *buff,                                                         /* Pointer to read buffer */
     UINT bc                                                             /* Number of bytes to receive */
     )
 {
-    SDCard_readFrame(buff, bc);
+    return SDCard_readFrame(buff, bc);
 }
 
 /*
@@ -147,7 +147,9 @@ int wait_ready (void)                                                   /* 1:OK,
 
 
     for (tmr = 5000; tmr; tmr--){                                       /* Wait for ready in timeout of 500ms */
-        rcvr_mmc(&d, 1);
+        if (!rcvr_mmc(&d, 1)) {
+            return (0);
+        }
         if (d == 0xFF){
             return ( 1) ;
         }
@@ -169,7 +171,7 @@ void deselect (void)
     BYTE d;
 
     CS_H();
-    rcvr_mmc(&d, 1);
+    (void)rcvr_mmc(&d, 1);
 }
 
 /*
@@ -206,7 +208,9 @@ int rcvr_datablock (                /* 1:OK, 0:Failed */
 
 
     for (tmr = 1000; tmr; tmr--){   /* Wait for data packet in timeout of 100ms */
-        rcvr_mmc(d, 1);
+        if (!rcvr_mmc(d, 1)) {
+            return (0);
+        }
         if (d[0] != 0xFF){
             break;
         }
@@ -215,8 +219,12 @@ int rcvr_datablock (                /* 1:OK, 0:Failed */
     if (d[0] != 0xFE){
         return ( 0) ;               /* If not valid data token, retutn with error */
     }
-    rcvr_mmc(buff, btr);            /* Receive the data block into buffer */
-    rcvr_mmc(d, 2);                 /* Discard CRC */
+    if (!rcvr_mmc(buff, btr)) {     /* Receive the data block into buffer */
+        return (0);
+    }
+    if (!rcvr_mmc(d, 2)) {          /* Discard CRC */
+        return (0);
+    }
 
     return (1);                     /* Return with success */
 }
@@ -241,11 +249,19 @@ int xmit_datablock (                /* 1:OK, 0:Failed */
     }
 
     d[0] = token;
-    xmit_mmc(d, 1);                 /* Xmit a token */
+    if (!xmit_mmc(d, 1)) {          /* Xmit a token */
+        return (0);
+    }
     if (token != 0xFD){             /* Is it data token? */
-        xmit_mmc(buff, 512);        /* Xmit the 512 byte data block to MMC */
-        rcvr_mmc(d, 2);             /* Dummy CRC (FF,FF) */
-        rcvr_mmc(d, 1);             /* Receive data response */
+        if (!xmit_mmc(buff, 512)) { /* Xmit the 512 byte data block to MMC */
+            return (0);
+        }
+        if (!rcvr_mmc(d, 2)) {      /* Dummy CRC (FF,FF) */
+            return (0);
+        }
+        if (!rcvr_mmc(d, 1)) {      /* Receive data response */
+            return (0);
+        }
         if ((d[0] & 0x1F) != 0x05){ /* If not accepted, return with error */
             return (0);
         }
@@ -297,15 +313,21 @@ BYTE send_cmd (                     /* Returns command response (bit7==1:Send fa
         n = 0x87;                   /* (valid CRC for CMD8(0x1AA)) */
     }
     buf[5] = n;
-    xmit_mmc(buf, 6);
+    if (!xmit_mmc(buf, 6)) {
+        return (0xFF);
+    }
 
     /* Receive command response */
     if (cmd == CMD12){
-        rcvr_mmc(&d, 1);            /* Skip a stuff byte when stop reading */
+        if (!rcvr_mmc(&d, 1)) {     /* Skip a stuff byte when stop reading */
+            return (0xFF);
+        }
     }
     n = 10;                         /* Wait for a valid response in timeout of 10 attempts */
     do {
-        rcvr_mmc(&d, 1);
+        if (!rcvr_mmc(&d, 1)) {
+            return (0xFF);
+        }
     }
     while ((d & 0x80) && --n);
 
@@ -384,12 +406,21 @@ DSTATUS disk_initialize (
     }
 
     CS_H();
-    for (n = 10; n; n--){rcvr_mmc(buf, 1);                              /* 80 dummy clocks */
+    for (n = 10; n; n--){
+        if (!rcvr_mmc(buf, 1)) {                                        /* 80 dummy clocks */
+            Stat = (DSTATUS)(s | STA_NOINIT);
+            return Stat;
+        }
     }
     ty = 0;
     if (send_cmd(CMD0, 0) == 1){                                        /* Enter Idle state */
         if (send_cmd(CMD8, 0x1AA) == 1){                                /* SDv2? */
-            rcvr_mmc(buf, 4);                                           /* Get trailing return value of R7 resp */
+            if (!rcvr_mmc(buf, 4)) {                                    /* Get trailing return value of R7 resp */
+                ty = 0;
+                deselect();
+                Stat = (DSTATUS)(s | STA_NOINIT);
+                return Stat;
+            }
             if (buf[2] == 0x01 && buf[3] == 0xAA){                      /* The card can work at vdd range of 2.7-3.6V */
                 for (tmr = 1000; tmr; tmr--)
                 {                                                       /* Wait for leaving idle state (ACMD41 with HCS bit) */
@@ -399,8 +430,11 @@ DSTATUS disk_initialize (
                     DLY_US(1000);
                 }
                 if (tmr && send_cmd(CMD58, 0) == 0){                    /* Check CCS bit in the OCR */
-                    rcvr_mmc(buf, 4);
-                    ty = (buf[0] & 0x40) ? CT_SD2 | CT_BLOCK : CT_SD2;  /* SDv2 */
+                    if (rcvr_mmc(buf, 4)) {
+                        ty = (buf[0] & 0x40) ? CT_SD2 | CT_BLOCK : CT_SD2;  /* SDv2 */
+                    } else {
+                        ty = 0;
+                    }
                 }
             }
         } else {                                                        /* SDv1 or MMCv3 */

@@ -53,11 +53,7 @@ int main(void)
             log_pending = 1;
         }
 
-        buttons_task(&sample, has_sample);
-
         epd_render_task();
-
-        buttons_task(&sample, has_sample);
 
         if (!buttons_pending() && !epd_render_pending()) {
             app_state_task();
