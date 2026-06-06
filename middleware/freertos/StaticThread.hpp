@@ -52,12 +52,15 @@ private:
 };
 
 /* 编译期固定栈大小和优先级的静态线程，不走 FreeRTOS 动态内存分配。 */
-template<unsigned StackWords, unsigned Priority>
+template<unsigned StackWords, unsigned Priority, unsigned Id>
 class StaticThread : public Thread {
 public:
+    typedef void (*NotifyHook)();
+
     /* 用给定入口函数创建静态 FreeRTOS 任务。 */
     void create(const char *name, TaskFunction_t entry, void *argument = 0)
     {
+        instance_ = this;
         set_native_handle(xTaskCreateStatic(entry, name,
                                             static_cast<configSTACK_DEPTH_TYPE>(StackWords),
                                             argument,
@@ -68,10 +71,45 @@ public:
         configASSERT(native_handle() != 0);
     }
 
+    /* 返回普通任务上下文使用的无参通知回调，供 C 模块保存和调用。 */
+    NotifyHook notify_hook()
+    {
+        instance_ = this;
+        return &StaticThread::notify_bound_thread;
+    }
+
+    /* 返回 ISR 上下文使用的无参通知回调，供端口中断和定时器中断调用。 */
+    NotifyHook notify_from_isr_hook()
+    {
+        instance_ = this;
+        return &StaticThread::notify_bound_thread_from_isr;
+    }
+
 private:
+    /* 由无参 C 回调反查当前模板实例绑定的线程对象。 */
+    static void notify_bound_thread()
+    {
+        if (instance_ != 0) {
+            instance_->notify();
+        }
+    }
+
+    /* 由无参 C 回调反查当前模板实例绑定的线程对象，并走 ISR-safe 通知路径。 */
+    static void notify_bound_thread_from_isr()
+    {
+        if (instance_ != 0) {
+            instance_->notify_from_isr();
+        }
+    }
+
+private:
+    static StaticThread *instance_;
     StaticTask_t control_block_;
     StackType_t stack_[StackWords];
 };
+
+template<unsigned StackWords, unsigned Priority, unsigned Id>
+StaticThread<StackWords, Priority, Id> *StaticThread<StackWords, Priority, Id>::instance_ = 0;
 
 /* 调度器启动失败后的停机兜底，正常运行时不会返回到这里。 */
 inline void halt()
