@@ -28,7 +28,8 @@
 
 #define EPD_RENDER_MIN_TICKS          1u                 /* 两次实际提交的最小间隔，单位 10ms。 */
 #define EPD_AUTO_FRAME_TICKS          10u                /* 自动温度页和 GIF 帧间隔，约 100ms。 */
-#define EPD_HISTORY_SCROLL_TICKS      160u               /* 历史页滚动播放间隔，约 1.6 秒。 */
+#define EPD_HISTORY_SCROLL_TICKS      600u               /* 历史页滚动播放间隔，约 6 秒，慢一点减少局部刷新残影。 */
+#define EPD_HISTORY_FULL_REFRESH_FRAMES 5u               /* 历史页每滚动这么多帧做一次全屏清刷去残影，其余帧局部刷新。 */
 
 #define EPD_STARTUP_SETTLE_MS         500u               /* 墨水屏上电后初始化前的稳定等待时间，单位毫秒。 */
 #define EPD_RESET_PRE_MS              50u                /* 墨水屏复位前保持 RST 高电平的时间，单位毫秒。 */

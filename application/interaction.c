@@ -44,31 +44,33 @@ static void interaction_show_settings(void)
 }
 
 /* 从主界面进入设置选择模式，并显示第一个设置项。
- * 先把目标页面写入渲染缓冲，再触发一次全屏刷新把新画面刷出，避免先刷旧内容再覆盖。 */
+ * 全屏清刷由显示任务执行(epd_request_full_clear)，避免控制任务与显示任务抢占墨水屏 SPI。 */
 static void interaction_enter_settings(void)
 {
     g_interaction_mode = INTERACTION_MODE_SETTINGS_SELECT;
     g_settings_item = SETTINGS_ITEM_SAMPLE;
     interaction_show_settings();
-    epd_full_refresh_once();
+    epd_request_full_clear();
 }
 
-/* 从主界面进入 Flash 历史记录滚动播放页。先提交目标画面再全刷。 */
+/* 从主界面进入 Flash 历史记录滚动播放页。历史页每帧渲染自带全屏清刷，
+ * 进入时无需再额外全刷，否则会连续两次全屏白闪，反而看不清。 */
 static void interaction_enter_history(void)
 {
     g_interaction_mode = INTERACTION_MODE_HISTORY;
     epd_show_history_playback();
-    epd_full_refresh_once();
 }
 
-/* 退出设置或历史页面，保存设置并恢复主温度界面自动刷新。先提交主画面再全刷。 */
+/* 退出设置或历史页面，保存设置并恢复主温度界面自动刷新。
+ * 全屏清刷改由显示任务执行(epd_request_full_clear)，避免控制任务直接驱动墨水屏
+ * 时被显示任务抢占 SPI，导致切回主界面不刷新。 */
 static void interaction_return_main(void)
 {
     g_interaction_mode = INTERACTION_MODE_MAIN;
     app_flush_settings();
     epd_resume_auto();
     sample_timer_force_due();
-    epd_full_refresh_once();
+    epd_request_full_clear();
 }
 
 /* S1 启动采集：恢复 DMA 序列管线并立即触发一次采样与主界面刷新。 */

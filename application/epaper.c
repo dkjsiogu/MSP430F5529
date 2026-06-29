@@ -124,6 +124,9 @@ static uint16_t g_epd_last_history_scroll_tick = 0;
 static uint16_t g_epd_last_gif_frame_tick = 0;
 static uint16_t g_epd_last_render_tick = 0;
 static uint8_t g_epd_has_render_tick = 0;
+static uint8_t g_epd_pending_full_clear = 0;          /* 控制层请求的“下次渲染前先全屏清刷”标志，由显示任务消费，避免控制任务直接驱动墨水屏与显示任务抢占 SPI。 */
+static uint8_t g_epd_history_full_due = 1;            /* 历史页下一帧是否做全屏清刷去残影：进入时或每若干滚动帧置位，渲染后清零。 */
+static uint16_t g_epd_history_scroll_frames = 0;      /* 距上次全屏清刷已滚动的帧数，达到 EPD_HISTORY_FULL_REFRESH_FRAMES 后触发一次全屏清刷。 */
 static TempSample g_epd_target_sample;
 static uint8_t epd_buf[EPD_BUF_SIZE];
 static uint8_t g_resource_row_buf[APP_RESOURCE_ROW_MAX_BYTES];
@@ -301,27 +304,35 @@ static uint8_t epd_history_frame_due(void)
         }
     }
     g_epd_last_history_scroll_tick = board_tick10();
+
+    /* 每滚动若干帧触发一次全屏清刷去残影，其余帧由渲染走局部刷新。 */
+    g_epd_history_scroll_frames++;
+    if (g_epd_history_scroll_frames >= EPD_HISTORY_FULL_REFRESH_FRAMES) {
+        g_epd_history_full_due = 1;
+        g_epd_history_scroll_frames = 0;
+    }
     return 1;
 }
 
-/* 将墨水屏 SPI 控制线恢复到空闲电平。 */
+/* 将墨水屏 SPI 控制线恢复到空闲电平。SDI/CLK 已交由 USCI_A0 接管，这里只管 CS/DC。 */
 static void epd_bus_idle(void)
 {
     EPD_CS_OUT |= EPD_CS_BIT;
-    EPD_CLK_OUT &= ~EPD_CLK_BIT;
-    EPD_SDI_OUT &= ~EPD_SDI_BIT;
     EPD_DC_OUT |= EPD_DC_BIT;
 }
 
-/* 初始化墨水屏使用的 GPIO 和软件 SPI 引脚方向。 */
+/* 初始化墨水屏总线：CS/DC/RST/BUSY 保持 GPIO，SDI/CLK 切到 USCI_A0 硬件 SPI。
+ * F5529 上 UCA0 的 SPI 引脚正好是 P3.3=SIMO、P2.7=CLK，与墨水屏实际接线一致，无需改线；
+ * P3.4 是 UCA0SOMI，但墨水屏只写不读(BUSY 走 P2.2)，故 P3.4 保留为 DC 的 GPIO，不使能 SOMI。
+ * 参考 Lab3-5-2，把原模拟 SPI 换成硬件 SPI。 */
 static void spi0_init(void)
 {
     EPD_BUSY_SEL &= ~EPD_BUSY_BIT;
     EPD_RST_SEL &= ~EPD_RST_BIT;
     EPD_DC_SEL &= ~EPD_DC_BIT;
     EPD_CS_SEL &= ~EPD_CS_BIT;
-    EPD_SDI_SEL &= ~EPD_SDI_BIT;
-    EPD_CLK_SEL &= ~EPD_CLK_BIT;
+    EPD_SDI_SEL |= EPD_SDI_BIT;                /* P3.3 -> UCA0SIMO */
+    EPD_CLK_SEL |= EPD_CLK_BIT;                /* P2.7 -> UCA0CLK */
 
     EPD_RST_OUT |= EPD_RST_BIT;
     epd_bus_idle();
@@ -330,27 +341,42 @@ static void spi0_init(void)
     EPD_RST_DIR |= EPD_RST_BIT;
     EPD_DC_DIR |= EPD_DC_BIT;
     EPD_CS_DIR |= EPD_CS_BIT;
-    EPD_SDI_DIR |= EPD_SDI_BIT;
+    EPD_SDI_DIR |= EPD_SDI_BIT;                /* SIMO/CLK 方向由 USCI 接管，置输出避免悬浮 */
     EPD_CLK_DIR |= EPD_CLK_BIT;
 
     EPD_RST_OUT |= EPD_RST_BIT;
     epd_bus_idle();
+
+    /* USCI_A0 = SPI 主机：8 位、MSB 先发、UCCKPH=1/UCCKPL=0(下降沿采样)。
+     * 实测这块 SSD1673 在下降沿采样：原模拟 SPI 因数据在整个时钟周期都稳定，采样沿对错都能工作，
+     * 换硬件 SPI 后必须用 UCCKPH=1——主机在上升沿改数据、下降沿供屏幕采样，否则命令全错位成残影。
+     * SMCLK 16MHz，4 分频得 4MHz SCLK。 */
+    UCA0CTL1 = UCSWRST;
+    UCA0CTL0 = UCMST | UCSYNC | UCMSB | UCCKPH;
+    UCA0CTL1 = UCSWRST | UCSSEL_2;
+    UCA0BR0 = 4u;
+    UCA0BR1 = 0u;
+    UCA0CTL1 &= ~UCSWRST;
 }
 
-/* 通过软件 SPI 向墨水屏发送一个字节。 */
+/* 通过 USCI_A0 硬件 SPI 向墨水屏发送一个字节。等 TX 缓冲就绪即写入，允许流式连续发送。 */
 static void spi0_write(uint8_t value)
 {
-    uint8_t bit;
+    while (!(UCA0IFG & UCTXIFG)) {
+        ;
+    }
+    UCA0TXBUF = value;
+}
 
-    for (bit = 0; bit < 8u; bit++) {
-        if (value & 0x80u) {
-            EPD_SDI_OUT |= EPD_SDI_BIT;
-        } else {
-            EPD_SDI_OUT &= ~EPD_SDI_BIT;
-        }
-        EPD_CLK_OUT |= EPD_CLK_BIT;
-        EPD_CLK_OUT &= ~EPD_CLK_BIT;
-        value = (uint8_t)(value << 1);
+/* 等待硬件 SPI 把最后一字节发完：先等它离开 TXBUF 进入移位寄存器，再等移位寄存器发完。
+ * 片选拉高前必须调用，避免最后一字节没发完就断开。 */
+static void spi0_wait_idle(void)
+{
+    while (!(UCA0IFG & UCTXIFG)) {
+        ;
+    }
+    while (UCA0STAT & UCBUSY) {
+        ;
     }
 }
 
@@ -369,9 +395,9 @@ static void epd_cmd(uint8_t cmd)
 {
     epd_select(0);
     epd_select(1);
-    EPD_CLK_OUT &= ~EPD_CLK_BIT;
     EPD_DC_OUT &= ~EPD_DC_BIT;
     spi0_write(cmd);
+    spi0_wait_idle();
     epd_select(0);
 }
 
@@ -380,9 +406,9 @@ static void epd_data(uint8_t data)
 {
     epd_select(0);
     epd_select(1);
-    EPD_CLK_OUT &= ~EPD_CLK_BIT;
     EPD_DC_OUT |= EPD_DC_BIT;
     spi0_write(data);
+    spi0_wait_idle();
     epd_select(0);
 }
 
@@ -391,7 +417,6 @@ static void epd_data_stream_start(void)
 {
     epd_select(0);
     epd_select(1);
-    EPD_CLK_OUT &= ~EPD_CLK_BIT;
     EPD_DC_OUT |= EPD_DC_BIT;
 }
 
@@ -404,6 +429,7 @@ static void epd_data_stream_write(uint8_t data)
 /* 结束连续数据写入并释放片选。 */
 static void epd_data_stream_end(void)
 {
+    spi0_wait_idle();
     epd_select(0);
 }
 
@@ -1629,6 +1655,15 @@ void epd_force_next_current_refresh(void)
     epd_request_render(1);
 }
 
+/* 请求显示任务在下次渲染前先做一次全屏清刷。供控制层在切换页面时调用，
+ * 把全屏刷新放到显示任务里执行，避免控制任务直接驱动墨水屏期间被显示任务抢占 SPI
+ * 导致切回主界面/设置页不刷新。调用方负责先把目标页 view 和 dirty 设好。 */
+void epd_request_full_clear(void)
+{
+    g_epd_pending_full_clear = 1;
+    epd_request_render(1);
+}
+
 void epd_show_current_auto(const TempSample *s)
 {
     if (!g_epd_auto_update) {
@@ -1726,7 +1761,8 @@ static void epd_alt_show_history(uint16_t start)
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
-/* 使用 SSD1673 渲染历史记录页面。 */
+/* 使用 SSD1673 渲染历史记录页面。平时只局部刷新+滚动，每隔 EPD_HISTORY_FULL_REFRESH_FRAMES
+ * 帧做一次全屏清刷去残影(进入历史页的首帧也全刷一次)。 */
 static void epd_show_history(uint16_t start)
 {
     uint16_t count;
@@ -1743,6 +1779,10 @@ static void epd_show_history(uint16_t start)
         start = 0;
     }
 
+    if (g_epd_history_full_due) {
+        epd_ssd_init_controller_and_clear();
+        g_epd_history_full_due = 0;
+    }
     epd_clear_buffer();
     epd_draw_string(0, 0, "FLASH LOG", 2);
     history_meta_line(start, count, line);
@@ -1786,6 +1826,8 @@ void epd_show_history_playback(void)
     g_epd_gif_playback = 0;
     g_epd_render_view = EPD_VIEW_HISTORY;
     g_epd_last_history_scroll_tick = board_tick10();
+    g_epd_history_full_due = 1;        /* 进入历史页首帧全屏清刷，给一个干净底。 */
+    g_epd_history_scroll_frames = 0;
     epd_request_render(1);
 }
 
@@ -1902,6 +1944,19 @@ void epd_render_task(void)
 
     g_epd_render_dirty = 0;
     rendered = 0;
+
+    /* 控制层请求的全屏清刷：在显示任务里执行，避免与控制任务抢占墨水屏 SPI。
+     * 清刷后控制器已切到局部刷新 LUT，紧接的页面渲染用局部刷新出内容。 */
+    if (g_epd_pending_full_clear) {
+        if (g_epd_driver == EPD_DRIVER_SPD2701) {
+            epd_alt_init();
+            epd_alt_clear_buffer();
+            (void)epd_alt_write_buffer_to_screen(epd_buf);
+        } else {
+            epd_ssd_init_controller_and_clear();
+        }
+        g_epd_pending_full_clear = 0;
+    }
 
     if (g_epd_render_view == EPD_VIEW_GIF) {
         if (g_epd_driver == EPD_DRIVER_SPD2701) {
