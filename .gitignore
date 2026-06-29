@@ -1,16 +1,6 @@
 # CCS / MSP430 build outputs
-Debug/*
-!Debug/
-!Debug/makefile
-!Debug/objects.mk
-!Debug/sources.mk
-!Debug/subdir_rules.mk
-!Debug/subdir_vars.mk
-!Debug/ccsObjs.opt
-!Debug/fatfs/
-!Debug/fatfs/subdir_rules.mk
-!Debug/fatfs/subdir_vars.mk
-
+# Debug/ 下全部由 CCS 自动生成的构建脚本/产物,随时可由 gmake 重建,不入库
+Debug/
 *.obj
 *.out
 *.map
@@ -21,6 +11,11 @@ Debug/*
 # Local debug launch history and editor caches
 .launches/
 Debug/.clangd/
+.vscode/msp430_intellisense.h
+
+# Docs and helper scripts (local-only)
+docs/
+tools/
 
 # Misc temporary files
 *.tmp
