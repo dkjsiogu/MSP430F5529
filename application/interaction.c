@@ -6,6 +6,7 @@
 #include "board.h"
 #include "epaper.h"
 #include "input.h"
+#include "sensors.h"
 
 typedef void (*InputEventHandler)(const TempSample *last_sample, uint8_t has_sample);
 
@@ -13,8 +14,6 @@ typedef void (*InputEventHandler)(const TempSample *last_sample, uint8_t has_sam
 #define INTERACTION_MODE_SETTINGS_SELECT 1u   /* 设置界面参数选择模式。 */
 #define INTERACTION_MODE_SETTINGS_EDIT   2u   /* 设置界面参数编辑模式。 */
 #define INTERACTION_MODE_HISTORY         3u   /* 历史记录播放界面按键模式。 */
-#define INTERACTION_MODE_GIF             4u   /* 全屏 GIF 动画播放界面按键模式。 */
-#define INTERACTION_MODE_TEXT            5u   /* SD 卡文本阅读界面按键模式。 */
 
 #define SETTINGS_ITEM_SAMPLE        0u   /* 设置项：定时采样间隔。 */
 #define SETTINGS_ITEM_ALARM_TEMP    1u   /* 设置项：报警温度阈值。 */
@@ -44,44 +43,50 @@ static void interaction_show_settings(void)
     epd_show_settings_page(g_settings_item, (uint8_t)(g_interaction_mode == INTERACTION_MODE_SETTINGS_EDIT));
 }
 
-/* 从主界面进入设置选择模式，并显示第一个设置项。 */
+/* 从主界面进入设置选择模式，并显示第一个设置项。
+ * 先把目标页面写入渲染缓冲，再触发一次全屏刷新把新画面刷出，避免先刷旧内容再覆盖。 */
 static void interaction_enter_settings(void)
 {
     g_interaction_mode = INTERACTION_MODE_SETTINGS_SELECT;
     g_settings_item = SETTINGS_ITEM_SAMPLE;
     interaction_show_settings();
+    epd_full_refresh_once();
 }
 
-/* 从主界面进入 SD 卡文本阅读页面。 */
-static void interaction_enter_text(void)
-{
-    g_interaction_mode = INTERACTION_MODE_TEXT;
-    (void)app_resources_reload();
-    epd_show_text_reader();
-}
-
-/* 从主界面进入全屏 GIF 动画播放页面。 */
-static void interaction_enter_gif(void)
-{
-    g_interaction_mode = INTERACTION_MODE_GIF;
-    (void)app_resources_reload();
-    epd_show_gif_playback();
-}
-
-/* 从主界面进入 Flash 历史记录滚动播放页。 */
+/* 从主界面进入 Flash 历史记录滚动播放页。先提交目标画面再全刷。 */
 static void interaction_enter_history(void)
 {
     g_interaction_mode = INTERACTION_MODE_HISTORY;
     epd_show_history_playback();
+    epd_full_refresh_once();
 }
 
-/* 退出设置或历史页面，保存设置并恢复主温度界面自动刷新。 */
+/* 退出设置或历史页面，保存设置并恢复主温度界面自动刷新。先提交主画面再全刷。 */
 static void interaction_return_main(void)
 {
     g_interaction_mode = INTERACTION_MODE_MAIN;
     app_flush_settings();
     epd_resume_auto();
     sample_timer_force_due();
+    epd_full_refresh_once();
+}
+
+/* S1 启动采集：恢复 DMA 序列管线并立即触发一次采样与主界面刷新。 */
+static void interaction_start_collection(void)
+{
+    app_set_collection_running(1);
+    adc_dma_start();
+    sample_timer_force_due();
+    epd_force_next_current_refresh();
+}
+
+/* S2 停止采集：停掉 DMA 触发并刷新主界面状态显示。 */
+static void interaction_stop_collection(void)
+{
+    app_set_collection_running(0);
+    adc_dma_stop();
+    buzzer_set(0);
+    epd_force_next_current_refresh();
 }
 
 /* 在设置选择模式中上下切换当前参数项。 */
@@ -128,7 +133,6 @@ static void interaction_adjust_setting(const TempSample *last_sample, uint8_t ha
     interaction_show_settings();
 }
 
-/* 执行一次类似上电后的墨水屏全屏刷新，并强制重新采样。 */
 /* 在设置页的选择模式和编辑模式之间切换。 */
 static void interaction_confirm_setting(void)
 {
@@ -145,13 +149,9 @@ static void interaction_handle_primary(const TempSample *last_sample, uint8_t ha
     if (g_interaction_mode == INTERACTION_MODE_MAIN) {
         (void)last_sample;
         (void)has_sample;
-        interaction_enter_gif();
+        interaction_start_collection();
     } else if (g_interaction_mode == INTERACTION_MODE_HISTORY) {
         interaction_return_main();
-    } else if (g_interaction_mode == INTERACTION_MODE_GIF) {
-        epd_gif_prev_asset();
-    } else if (g_interaction_mode == INTERACTION_MODE_TEXT) {
-        epd_text_prev_page();
     } else if (g_interaction_mode == INTERACTION_MODE_SETTINGS_SELECT) {
         interaction_move_setting(-1);
     } else if (g_interaction_mode == INTERACTION_MODE_SETTINGS_EDIT) {
@@ -167,11 +167,7 @@ static void interaction_handle_secondary(const TempSample *last_sample, uint8_t 
     if (g_interaction_mode == INTERACTION_MODE_MAIN) {
         (void)last_sample;
         (void)has_sample;
-        interaction_enter_text();
-    } else if (g_interaction_mode == INTERACTION_MODE_GIF) {
-        epd_gif_next_asset();
-    } else if (g_interaction_mode == INTERACTION_MODE_TEXT) {
-        epd_text_next_page();
+        interaction_stop_collection();
     } else if (g_interaction_mode == INTERACTION_MODE_SETTINGS_SELECT) {
         interaction_move_setting(1);
     } else if (g_interaction_mode == INTERACTION_MODE_SETTINGS_EDIT) {
@@ -184,15 +180,7 @@ static void interaction_handle_secondary(const TempSample *last_sample, uint8_t 
 
 static void interaction_handle_up(const TempSample *last_sample, uint8_t has_sample)
 {
-    if (g_interaction_mode == INTERACTION_MODE_GIF) {
-        (void)last_sample;
-        (void)has_sample;
-        epd_gif_prev_asset();
-    } else if (g_interaction_mode == INTERACTION_MODE_TEXT) {
-        (void)last_sample;
-        (void)has_sample;
-        epd_text_prev_page();
-    } else if (g_interaction_mode == INTERACTION_MODE_SETTINGS_SELECT) {
+    if (g_interaction_mode == INTERACTION_MODE_SETTINGS_SELECT) {
         interaction_move_setting(-1);
     } else if (g_interaction_mode == INTERACTION_MODE_SETTINGS_EDIT) {
         interaction_adjust_setting(last_sample, has_sample, 1);
@@ -204,15 +192,7 @@ static void interaction_handle_up(const TempSample *last_sample, uint8_t has_sam
 
 static void interaction_handle_down(const TempSample *last_sample, uint8_t has_sample)
 {
-    if (g_interaction_mode == INTERACTION_MODE_GIF) {
-        (void)last_sample;
-        (void)has_sample;
-        epd_gif_next_asset();
-    } else if (g_interaction_mode == INTERACTION_MODE_TEXT) {
-        (void)last_sample;
-        (void)has_sample;
-        epd_text_next_page();
-    } else if (g_interaction_mode == INTERACTION_MODE_SETTINGS_SELECT) {
+    if (g_interaction_mode == INTERACTION_MODE_SETTINGS_SELECT) {
         interaction_move_setting(1);
     } else if (g_interaction_mode == INTERACTION_MODE_SETTINGS_EDIT) {
         interaction_adjust_setting(last_sample, has_sample, -1);

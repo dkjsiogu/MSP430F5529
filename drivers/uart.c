@@ -7,9 +7,9 @@ static UartIsrWakeHook g_uart_rx_hook = 0;
 
 void uart_init(void)
 {
-    P4SEL &= ~BIT4;
-    P4DIR &= ~(BIT4 | BIT5);
-    P4SEL |= BIT5;
+    P4SEL |= BIT4 | BIT5;                 /* P4.4=UCA1TXD, P4.5=UCA1RXD。 */
+    P4DIR |= BIT4;
+    P4DIR &= ~BIT5;
     UCA1CTL1 |= UCSWRST;
     UCA1CTL1 |= UCSSEL_2;
     UCA1BR0 = 104;
@@ -32,6 +32,22 @@ uint8_t uart_take_rx(void)
     g_uart_rx_char = 0;
     return c;
 }
+
+void uart_write_char(uint8_t c)
+{
+    while (!(UCA1IFG & UCTXIFG)) {
+    }
+    UCA1TXBUF = c;
+}
+
+void uart_write_str(const char *s)
+{
+    while (*s) {
+        uart_write_char((uint8_t)*s);
+        s++;
+    }
+}
+
 #pragma vector=USCI_A1_VECTOR
 __interrupt void USCI_A1_ISR(void)
 {

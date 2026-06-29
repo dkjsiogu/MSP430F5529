@@ -509,21 +509,281 @@ void sensors_init(void)
     i2c_init();
     tmp421_init();
 }
+
+/* ===== ADC12 + Timer_B0 触发 + DMA 搬移 + 5 轮批量存 Flash =====
+ * 参考 Lab3-3-1（Timer_A 周期节拍）与 ADC-DMA 示例：
+ *  - Timer_B0 每 1 秒置位 ADC12SC，启动一次片内温度（ch10，1.5V 内参考）转换。
+ *    （板载 Timer_A0/1/2 已分别被采样节拍、FreeRTOS tick 和蜂鸣器占用，故用 Timer_B0。）
+ *  - 转换完成的 ADC12IFGx 触发 DMA0 块传输（DMADT_1，DMA0SZ=1），把 ADC12MEM0
+ *    搬到 RAM 缓冲区；累计 5 轮后置位批次完成标志，交应用层合成 TempSample 写 Flash。
+ *  - 块传输模式下目的地址不会自动回卷，因此在 DMA 中断里手动更新 DMA0DA 指向下一空位，
+ *    5 轮后复位到缓冲区起始。NTC（ch5，AVCC 参考）参考电压与片内温度不同，序列模式
+ *    下混合参考在本系列硅片上不稳定，故 NTC 由 collect_sample 轮询读取，保证数值正确。
+ *  - 频繁写 Flash 会降低寿命，因此每 5 轮 DMA 才合成一条记录写入历史区。 */
+#define ADC_DMA_ROUNDS_PER_BATCH   5u
+#define ADC_DMA_BUFFER_LEN         10u                            /* 预留 10 字对齐 spec 的 buffer[10]。 */
+#define ADC_DMA_TRIGGER_HZ         1u
+
+static volatile uint16_t g_adc_dma_buffer[ADC_DMA_BUFFER_LEN];  /* DMA 搬移的片内温度 ADC 结果。 */
+static volatile uint16_t g_adc_dma_xfer_count = 0;             /* 当前批次已搬完的轮数 0..5。 */
+static volatile uint16_t g_adc_dma_latest_round = 0;          /* 最近完成一轮在 buffer 中的下标 0..4。 */
+static volatile uint8_t  g_adc_dma_batch_ready = 0;            /* 5 轮批次完成标志，DMA 中断置位，应用任务取走。 */
+static volatile uint8_t  g_adc_dma_has_data = 0;               /* 首轮 DMA 完成后置位，表示 buffer 已有有效数据。 */
+static volatile uint8_t  g_adc_dma_running = 0;                /* 采集运行状态：1 启动 Timer_B0+ADC12，0 停止。 */
+static uint8_t           g_adc_dma_ntc_present = 0;            /* 启动前一次性检测 NTC 是否接入。 */
+static int16_t           g_adc_dma_last_ntc_t10 = INVALID_T10; /* 最近一次轮询到的 NTC 温度，供主界面复用。 */
+static int16_t           g_adc_dma_last_die_t10 = INVALID_T10; /* 最近一次有效的 DIE 温度，避免启停瞬间显示异常值。 */
+
+/* 把 ADC12 配成单通道转换（ch10，1.5V 内参考）+ DMA 块传输，并装填首轮 DMA。 */
+static void adc_dma_arm_sequence(void)
+{
+    /* 片内温度通道需要 1.5V 内参考，参考 Lab ADC 示例：清 REFMSTR、置 ADC12REFON。 */
+    REFCTL0 &= ~REFMSTR;
+    REFCTL0 = REFVSEL_0 | REFON;
+    /* 等待参考发生器稳定，避免首批转换读到未建立的参考电压。
+     * NTC 轮询会关掉 ADC12，重新装填后需要足够时间让 1.5V 内参考缓冲重建。 */
+    while (REFCTL0 & REFGENBUSY) {
+        ;
+    }
+    delay_ms(30);
+
+    ADC12CTL0 &= ~ADC12ENC;
+    ADC12CTL0 = ADC12SHT0_15 | ADC12REFON | ADC12ON;
+    ADC12CTL1 = ADC12SHP | ADC12CONSEQ_0;                       /* 单通道单次转换。 */
+    ADC12MCTL0 = ADC12SREF_1 | ADC12INCH_10;                    /* 片内温度，1.5V 参考。 */
+    ADC12IE = 0;                                                /* 不使能 ADC12 中断，由 DMA 搬结果。 */
+    (void)ADC12MEM0;                                            /* 读 MEM0 清残留 IFG。 */
+    ADC12CTL0 |= ADC12ENC;
+
+    /* 配置 DMA0：触发源 ADC12IFGx，块传输 1 个字，源地址固定（MEM0），目的地址自增。 */
+    DMACTL0 = DMA0TSEL_24;
+    DMA0SA = (uint32_t)&ADC12MEM0;
+    DMA0DA = (uint32_t)&g_adc_dma_buffer[0];
+    DMA0SZ = 1u;
+    DMA0CTL = DMADT_1 | DMASRCINCR_0 | DMADSTINCR_3 | DMAEN | DMAIE;
+
+    g_adc_dma_xfer_count = 0;
+    g_adc_dma_latest_round = 0;
+    g_adc_dma_batch_ready = 0;
+    g_adc_dma_has_data = 0;
+}
+
+/* 启动 ADC12 序列 + DMA + Timer_B0 自动采样管线。必须在 sensors_init 之后、调度器启动之前调用。 */
+void adc_dma_init(void)
+{
+    uint16_t ntc_adc;
+
+    /* 启动前用轮询 ADC 一次性判断 NTC 是否接入并读取初始温度，之后 ADC12 交给 DMA 管线独占。
+     * NTC 热敏电阻热惯性大，批次间复用缓存值即可，避免轮询 NTC 重配 ADC12 打断 DMA。 */
+    g_adc_dma_ntc_present = ntc_input_present();
+    if (g_adc_dma_ntc_present) {
+        ntc_adc = adc_read_avg(NTC_ADC_INCH, ADC12SREF_0, 0);
+        if (ntc_adc_in_table_range(ntc_adc)) {
+            g_adc_dma_last_ntc_t10 = ntc_adc_to_t10(ntc_adc);
+        }
+    }
+
+    adc_dma_arm_sequence();
+
+    /* 配置 Timer_B0：ACLK 32768Hz、up mode、1 秒周期，CCR0 中断里置位 ADC12SC 启动一轮序列。 */
+    TB0CCR0 = (uint16_t)((32768u / ADC_DMA_TRIGGER_HZ) - 1u);
+    TB0CCTL0 = CCIE;
+    TB0CTL = TBSSEL_1 | MC_1 | TBCLR;
+
+    g_adc_dma_running = 1;
+}
+
+/* 启动采集：重新装填序列 + DMA，并启动 Timer_B0。 */
+void adc_dma_start(void)
+{
+    adc_dma_arm_sequence();
+    TB0CCTL0 = CCIE;
+    TB0CTL = TBSSEL_1 | MC_1 | TBCLR;
+    g_adc_dma_running = 1;
+}
+
+/* 停止采集：停掉 Timer_B0 触发并关闭 ADC12 转换，保留缓冲区状态。 */
+void adc_dma_stop(void)
+{
+    g_adc_dma_running = 0;
+    TB0CTL = MC_0 | TBCLR;
+    TB0CCTL0 = 0;
+    ADC12CTL0 &= ~(ADC12ENC | ADC12SC);
+    DMA0CTL &= ~(DMAEN | DMAIE);
+}
+
+uint8_t adc_dma_running(void)
+{
+    return g_adc_dma_running;
+}
+
+/* 读取 DMA 管线最近一轮的片内温度 ADC 值，供 collect_sample 合成实时样本。 */
+static uint8_t adc_dma_latest(uint16_t *die_adc)
+{
+    uint16_t round_idx;
+    uint16_t die;
+    uint8_t has_data;
+
+    __disable_interrupt();
+    has_data = g_adc_dma_has_data;
+    round_idx = g_adc_dma_latest_round;
+    die = g_adc_dma_buffer[round_idx];
+    __enable_interrupt();
+
+    if (!has_data) {
+        return 0;
+    }
+    *die_adc = die;
+    return 1;
+}
+
+/* 应用任务取走 5 轮 DMA 批量，合成一条 TempSample；无批次完成则返回 0。 */
+uint8_t adc_dma_batch_take(TempSample *out)
+{
+    uint16_t buf[ADC_DMA_ROUNDS_PER_BATCH];
+    uint16_t i;
+    uint16_t pending;
+    uint16_t ntc_adc;
+    int16_t die_t10;
+    uint8_t tmp_ok;
+
+    __disable_interrupt();
+    pending = g_adc_dma_batch_ready;
+    if (pending) {
+        g_adc_dma_batch_ready = 0;
+        for (i = 0; i < ADC_DMA_ROUNDS_PER_BATCH; i++) {
+            buf[i] = g_adc_dma_buffer[i];
+        }
+    }
+    __enable_interrupt();
+
+    if (!pending) {
+        return 0;
+    }
+
+    out->flags = 0;
+    out->reserved_t10 = INVALID_T10;
+
+    /* 片内温度：逐轮把 DMA DIE 换算成温度，只平均落在合理区间的有效值。
+     * 重新装填管线后首轮转换可能读到未建立的参考，产生异常值，需要过滤。 */
+    {   uint8_t valid = 0u;
+        int32_t t10_sum = 0;
+        for (i = 0; i < ADC_DMA_ROUNDS_PER_BATCH; i++) {
+            int16_t t10 = die_adc_to_t10(buf[i]);
+            if (t10 >= -400 && t10 <= 1200) {
+                t10_sum += t10;
+                valid++;
+            }
+        }
+        if (valid > 0u) {
+            die_t10 = (int16_t)(t10_sum / valid);
+            out->die_t10 = die_t10;
+            g_adc_dma_last_die_t10 = die_t10;
+            out->flags |= FLAG_DIE_OK;
+        } else if (g_adc_dma_last_die_t10 != INVALID_T10) {
+            out->die_t10 = g_adc_dma_last_die_t10;
+            out->flags |= FLAG_DIE_OK;
+        } else {
+            out->die_t10 = INVALID_T10;
+        }
+    }
+
+    /* NTC 参考电压与片内温度不同，每批次（5 秒）轮询一次并刷新缓存。
+     * 轮询会重配 ADC12，因此轮询后重新装填 DMA 管线继续下一批采集。 */
+    if (g_adc_dma_ntc_present) {
+        ntc_adc = adc_read_avg(NTC_ADC_INCH, ADC12SREF_0, 0);
+        if (ntc_adc_in_table_range(ntc_adc)) {
+            out->ntc_t10 = ntc_adc_to_t10(ntc_adc);
+            g_adc_dma_last_ntc_t10 = out->ntc_t10;
+            out->flags |= FLAG_NTC_OK;
+        } else if (g_adc_dma_last_ntc_t10 != INVALID_T10) {
+            out->ntc_t10 = g_adc_dma_last_ntc_t10;
+            out->flags |= FLAG_NTC_OK;
+        } else {
+            out->ntc_t10 = INVALID_T10;
+        }
+    } else {
+        out->ntc_t10 = INVALID_T10;
+    }
+
+    tmp_ok = tmp421_read_t10(TMP421_REG_LOCAL_MSB, TMP421_REG_LOCAL_LSB, &out->tmp_local_t10);
+    if (tmp_ok) {
+        out->flags |= FLAG_TMP_LOCAL_OK;
+    }
+
+    /* 轮询 NTC 重配了 ADC12，重新装填 DMA 管线以继续下一批 5 轮采集。 */
+    adc_dma_arm_sequence();
+    return 1;
+}
+
+/* Timer_B0 CCR0：每秒置位 ADC12SC，启动一轮片内温度转换。 */
+#pragma vector=TIMER0_B0_VECTOR
+__interrupt void TIMER0_B0_ISR(void)
+{
+    ADC12CTL0 |= ADC12SC;
+}
+
+/* DMA0 完成中断：一轮搬移结束，手动更新 DMA0DA 指向下一空位，5 轮后置位批次标志。 */
+#pragma vector=DMA_VECTOR
+__interrupt void DMA_ISR(void)
+{
+    uint16_t round;
+
+    switch (__even_in_range(DMAIV, 16)) {
+        case 2: /* DMA0IFG */
+            round = (uint16_t)(g_adc_dma_xfer_count + 1u);
+            g_adc_dma_xfer_count = round;
+            g_adc_dma_latest_round = (uint16_t)(round - 1u);
+            g_adc_dma_has_data = 1;
+
+            if (round >= ADC_DMA_ROUNDS_PER_BATCH) {
+                g_adc_dma_batch_ready = 1;
+                g_adc_dma_xfer_count = 0;
+                DMA0DA = (uint32_t)&g_adc_dma_buffer[0];
+            } else {
+                DMA0DA = (uint32_t)&g_adc_dma_buffer[round];
+            }
+            DMA0SA = (uint32_t)&ADC12MEM0;
+            DMA0SZ = 1u;
+            DMA0CTL |= DMAEN;
+            break;
+        default:
+            break;
+    }
+}
+
 void collect_sample(TempSample *s)
 {
-    uint16_t adc;
+    uint16_t die_adc;
+    int16_t die_t10;
     uint8_t tmp_ok;
 
     s->flags = 0;
     s->reserved_t10 = INVALID_T10;
 
-    adc = adc_read_avg(ADC12INCH_10, ADC12SREF_1, 1);
-    s->die_t10 = die_adc_to_t10(adc);
-    s->flags |= FLAG_DIE_OK;
+    /* 片内温度由 DMA 管线搬移；NTC 复用最近一次批次轮询的缓存值。
+     * 启停瞬间若 DMA 尚未产出数据或数值异常，复用上次有效 DIE，避免显示 -50°C 闪屏。 */
+    if (adc_dma_latest(&die_adc)) {
+        die_t10 = die_adc_to_t10(die_adc);
+        if (die_t10 >= -400 && die_t10 <= 1200) {
+            s->die_t10 = die_t10;
+            g_adc_dma_last_die_t10 = die_t10;
+            s->flags |= FLAG_DIE_OK;
+        } else if (g_adc_dma_last_die_t10 != INVALID_T10) {
+            s->die_t10 = g_adc_dma_last_die_t10;
+            s->flags |= FLAG_DIE_OK;
+        } else {
+            s->die_t10 = INVALID_T10;
+        }
+    } else if (g_adc_dma_last_die_t10 != INVALID_T10) {
+        s->die_t10 = g_adc_dma_last_die_t10;
+        s->flags |= FLAG_DIE_OK;
+    } else {
+        s->die_t10 = INVALID_T10;
+    }
 
-    adc = adc_read_avg(NTC_ADC_INCH, ADC12SREF_0, 0);
-    if (ntc_input_present() && ntc_adc_in_table_range(adc)) {
-        s->ntc_t10 = ntc_adc_to_t10(adc);
+    if (g_adc_dma_last_ntc_t10 != INVALID_T10) {
+        s->ntc_t10 = g_adc_dma_last_ntc_t10;
         s->flags |= FLAG_NTC_OK;
     } else {
         s->ntc_t10 = INVALID_T10;

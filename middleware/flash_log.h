@@ -13,5 +13,6 @@ void flash_log_sample(const TempSample *s);                /* 将一次温度样
 void flash_erase_log(void);                                /* 擦除整个 Flash 历史记录区并重置序号。 */
 uint16_t history_count(void);                              /* 返回当前有效历史记录条数。 */
 uint8_t history_get(uint16_t index, TempRecord *out);      /* 读取指定下标的历史记录，成功返回 1。 */
+uint16_t flash_next_seq(void);                             /* 返回下一条历史记录的序号，供主界面显示采集进度。 */
 
 #endif

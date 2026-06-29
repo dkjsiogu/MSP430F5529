@@ -1,4 +1,4 @@
-﻿#include "epaper.h"
+#include "epaper.h"
 #include "app_config.h"
 #include "app_state.h"
 #include "board.h"
@@ -7,7 +7,9 @@
 #include "app_resources.h"
 #include "text_reader.h"
 #include "display_config.h"
-#include "epd_panel_msp430.h"
+#include "platform_config.h"
+
+#define HISTORY_ROWS_ON_EPD HISTORY_PAGE_ROWS
 
 static const uint8_t font5x7[96][5] = {
     {0x00,0x00,0x00,0x00,0x00}, {0x00,0x00,0x5F,0x00,0x00},
@@ -60,79 +62,52 @@ static const uint8_t font5x7[96][5] = {
     {0x10,0x08,0x08,0x10,0x08}, {0x00,0x06,0x09,0x09,0x06}
 };
 
-#define EPD_VIEW_CURRENT            0u /* 褰撳墠娓╁害涓荤晫闈㈡覆鏌撶洰鏍囥€?*/
-#define EPD_VIEW_HISTORY            1u /* Flash 鍘嗗彶璁板綍鐣岄潰娓叉煋鐩爣銆?*/
-#define EPD_VIEW_SETTINGS           2u /* 璁剧疆鐣岄潰娓叉煋鐩爣銆?*/
-#define EPD_VIEW_GIF                3u /* 鍏ㄥ睆 GIF 鍔ㄧ敾鎾斁鐣岄潰娓叉煋鐩爣銆?*/
-#define EPD_VIEW_TEXT               4u /* 鏂囨湰闃呰鐣岄潰娓叉煋鐩爣銆?*/
-#define EPD_SETTINGS_ROWS           5u /* 璁剧疆椤甸潰鏄剧ず鐨勯厤缃」鏁伴噺銆?*/
-#define EPD_HOURGLASS_X             198 /* SSD1673 涓荤晫闈㈡矙婕忛粯璁?X 鍧愭爣锛岃祫婧愮储寮曠己澶辨椂浣跨敤銆?*/
-#define EPD_HOURGLASS_Y             12  /* SSD1673 涓荤晫闈㈡矙婕忛粯璁?Y 鍧愭爣锛岃祫婧愮储寮曠己澶辨椂浣跨敤銆?*/
-#define EPD_ALT_HOURGLASS_X         120 /* 澶囩敤椹卞姩涓荤晫闈㈡矙婕?X 鍧愭爣銆?*/
-#define EPD_ALT_HOURGLASS_Y         4   /* 澶囩敤椹卞姩涓荤晫闈㈡矙婕?Y 鍧愭爣銆?*/
-#define EPD_ZHENG_X                 170 /* SSD1673 涓荤晫闈⑩€滈儜鈥濆瓧缁樺埗 X 鍧愭爣锛屼綅浜庢矙婕忓乏渚с€?*/
-#define EPD_ZHENG_Y                 38  /* SSD1673 涓荤晫闈⑩€滈儜鈥濆瓧缁樺埗 Y 鍧愭爣銆?*/
-#define EPD_ALT_ZHENG_X             94  /* 澶囩敤椹卞姩涓荤晫闈⑩€滈儜鈥濆瓧缁樺埗 X 鍧愭爣銆?*/
-#define EPD_ALT_ZHENG_Y             96  /* 澶囩敤椹卞姩涓荤晫闈⑩€滈儜鈥濆瓧缁樺埗 Y 鍧愭爣銆?*/
-#define EPD_TEXT_TOP_Y              14u /* SSD1673 闃呰椤垫鏂囪捣濮?Y 鍧愭爣銆?*/
-#define EPD_TEXT_ALT_TOP_Y          12u /* 澶囩敤椹卞姩闃呰椤垫鏂囪捣濮?Y 鍧愭爣銆?*/
-#define EPD_TEXT_LINES              6u  /* SSD1673 闃呰椤垫鏂囪鏁般€?*/
-#define EPD_TEXT_ALT_LINES          7u  /* 澶囩敤椹卞姩闃呰椤垫鏂囪鏁般€?*/
-#define EPD_UI_GLYPH_W              16u /* 设置页内置中文字形宽度，单位像素。 */
-#define EPD_UI_GLYPH_H              16u /* 设置页内置中文字形高度，单位像素。 */
-#define EPD_UI_GLYPH_STRIDE         2u  /* 设置页内置中文字形每行字节数。 */
-#define EPD_UI_GLYPH_BYTES          (EPD_UI_GLYPH_H * EPD_UI_GLYPH_STRIDE) /* 单个内置中文字形字节数。 */
-#define EPD_ARRAY_COUNT(a)          (sizeof(a) / sizeof((a)[0])) /* 计算静态数组元素数量。 */
-
-typedef struct {
-    uint16_t codepoint;                                  /* Unicode 码点。 */
-    uint8_t bitmap[EPD_UI_GLYPH_BYTES];                  /* 16x16 1bpp 点阵，bit=1 表示黑点。 */
-} EpdUiGlyph;
-
-typedef struct {
-    const uint16_t *label;                               /* 设置项中文标签。 */
-    uint8_t label_len;                                   /* 标签字数。 */
-    uint16_t unit;                                       /* 设置值后缀单位，0 表示无单位。 */
-} EpdSettingRow;
-
-static const EpdUiGlyph epd_ui_glyphs[] = {
-    {0x8BBEu, {0x43u,0xF8u,0x73u,0x08u,0x33u,0x08u,0x06u,0x0Cu,0x0Cu,0x0Fu,0xE0u,0x00u,0x67u,0xFCu,0x62u,0x0Cu,0x63u,0x08u,0x61u,0x98u,0x68u,0xF0u,0x78u,0xE0u,0x71u,0xF8u,0x4Fu,0x1Eu,0x0Cu,0x06u,0x00u,0x00u}},
-    {0x7F6Eu, {0x00u,0x00u,0x7Fu,0xFCu,0x44u,0x44u,0x7Fu,0xFCu,0x01u,0x00u,0xFFu,0xFEu,0x01u,0x00u,0x3Fu,0xFCu,0x20u,0x0Cu,0x3Fu,0xFCu,0x20u,0x0Cu,0x3Fu,0xFCu,0x20u,0x0Cu,0x20u,0x0Cu,0xFFu,0xFFu,0x00u,0x00u}},
-    {0x91C7u, {0xFFu,0xF8u,0x02u,0x04u,0x43u,0x0Cu,0x61u,0x98u,0x31u,0x90u,0x11u,0x30u,0x01u,0x00u,0xFFu,0xFFu,0x07u,0xC0u,0x05u,0x40u,0x19u,0x20u,0x31u,0x18u,0xE1u,0x0Eu,0x81u,0x02u,0x01u,0x00u,0x01u,0x00u}},
-    {0x6837u, {0x21u,0x0Cu,0x21u,0x88u,0x20u,0x98u,0xFFu,0xFEu,0x60u,0x60u,0x60u,0x60u,0x70u,0x60u,0x7Bu,0xFEu,0xACu,0x60u,0xACu,0x60u,0xA0u,0x60u,0x27u,0xFFu,0x20u,0x60u,0x20u,0x60u,0x20u,0x60u,0x20u,0x60u}},
-    {0x79D2u, {0x38u,0x20u,0xF0u,0x20u,0x20u,0x2Cu,0x21u,0x24u,0x21u,0x26u,0xFFu,0x22u,0x63u,0x22u,0x62u,0x20u,0x72u,0x26u,0xF8u,0x26u,0xACu,0x0Cu,0xA0u,0x18u,0x20u,0x30u,0x20u,0xE0u,0x23u,0x80u,0x2Eu,0x00u}},
-    {0x62A5u, {0x20u,0x00u,0x27u,0xFEu,0x26u,0x06u,0xFEu,0x06u,0x66u,0x7Cu,0x26u,0x00u,0x27u,0xFEu,0x3Eu,0x86u,0xF6u,0xC4u,0xE6u,0x4Cu,0x26u,0x68u,0x26u,0x38u,0x26u,0x78u,0x66u,0xCEu,0xE7u,0x82u,0x00u,0x00u}},
-    {0x8B66u, {0x24u,0x20u,0xFFu,0xA0u,0x60u,0x7Fu,0x7Fu,0xE4u,0x83u,0xBCu,0x7Au,0x18u,0x4Au,0x66u,0x7Eu,0x00u,0x01u,0x00u,0xFFu,0xFFu,0x00u,0x00u,0x3Fu,0xF8u,0x00u,0x00u,0x3Fu,0xF8u,0x20u,0x08u,0x3Fu,0xF8u}},
-    {0x6E29u, {0xC0u,0x00u,0x67u,0xFCu,0x24u,0x0Cu,0x07u,0xFCu,0x84u,0x04u,0xC7u,0xFCu,0x64u,0x0Cu,0x44u,0x00u,0x0Fu,0xFEu,0x4Du,0xB6u,0x6Du,0xB6u,0x4Du,0xB6u,0xCDu,0xB6u,0xCDu,0xB6u,0xFFu,0xFFu,0x80u,0x00u}},
-    {0x5EA6u, {0x01u,0x80u,0x01u,0x80u,0x7Fu,0xFFu,0x40u,0x00u,0x40u,0x10u,0x7Fu,0xFEu,0x46u,0x10u,0x47u,0xF0u,0x40u,0x00u,0x5Fu,0xFCu,0x46u,0x18u,0xC3u,0x30u,0xC1u,0xE0u,0x8Fu,0xF8u,0x38u,0x0Eu,0x00u,0x00u}},
-    {0x8BB0u, {0xC0u,0x00u,0x67u,0xFEu,0x60u,0x06u,0x20u,0x06u,0x00u,0x06u,0x00u,0x06u,0xE0u,0x06u,0x63u,0xFEu,0x62u,0x06u,0x62u,0x00u,0x62u,0x00u,0x62u,0x03u,0x6Au,0x03u,0x7Au,0x03u,0x73u,0x06u,0x43u,0xFEu}},
-    {0x5F55u, {0x7Fu,0xF8u,0x00u,0x08u,0x00u,0x08u,0x7Fu,0xF8u,0x00u,0x08u,0x00u,0x08u,0xFFu,0xFFu,0x01u,0x80u,0x71u,0x8Cu,0x11u,0xF8u,0x07u,0x60u,0x3Du,0x38u,0xF1u,0x0Eu,0x83u,0x02u,0x0Fu,0x00u,0x00u,0x00u}},
-    {0x6761u, {0x18u,0x00u,0x1Fu,0xF8u,0x38u,0x18u,0x6Cu,0x30u,0xC7u,0xE0u,0x03u,0xC0u,0x3Eu,0xFCu,0xE1u,0x0Eu,0x01u,0x00u,0x7Fu,0xFCu,0x01u,0x80u,0x11u,0x20u,0x31u,0x38u,0x61u,0x0Eu,0x8Fu,0x02u,0x00u,0x00u}},
-    {0x6570u, {0x18u,0x20u,0xDBu,0x20u,0x5Au,0x60u,0x18u,0x7Fu,0xFFu,0x46u,0x38u,0xC6u,0x7Eu,0xC4u,0x9Bu,0xE4u,0x30u,0x6Cu,0xFEu,0x2Cu,0x62u,0x38u,0xC6u,0x18u,0x3Cu,0x38u,0x3Cu,0x6Cu,0xE2u,0xC6u,0x81u,0x83u}},
-    {0x65F6u, {0x00u,0x08u,0x00u,0x08u,0xFCu,0x08u,0x8Cu,0x08u,0x8Fu,0xFFu,0x8Cu,0x0Cu,0x8Cu,0x08u,0xFDu,0x08u,0x8Du,0x88u,0x8Cu,0xC8u,0x8Cu,0xC8u,0x8Cu,0x08u,0xFCu,0x08u,0x8Cu,0x08u,0x8Cu,0xF8u,0x00u,0x00u}},
-    {0x957Fu, {0x30u,0x08u,0x30u,0x38u,0x30u,0xE0u,0x33u,0x80u,0x36u,0x00u,0x30u,0x00u,0xFFu,0xFFu,0x31u,0x80u,0x31u,0x80u,0x30u,0xC0u,0x30u,0x40u,0x30u,0x60u,0x33u,0x38u,0x3Fu,0x0Eu,0x3Cu,0x02u,0x30u,0x00u}},
-    {0x6C99u, {0xC0u,0x40u,0x60u,0x40u,0x32u,0x40u,0x02u,0x48u,0x86u,0x4Cu,0xC4u,0x46u,0x6Cu,0x42u,0x08u,0x44u,0x20u,0x4Cu,0x60u,0x58u,0x60u,0x30u,0x40u,0x60u,0xC1u,0xC0u,0xCFu,0x00u,0x98u,0x00u,0x00u,0x00u}},
-    {0x6F0Fu, {0x80u,0x00u,0xCFu,0xFEu,0x68u,0x06u,0x0Fu,0xFEu,0x88u,0x06u,0xC8u,0x00u,0xCFu,0xFFu,0x48u,0x60u,0x1Fu,0xFEu,0x5Eu,0x62u,0x5Fu,0x72u,0xDEu,0xEAu,0xD7u,0x72u,0xB6u,0xEAu,0xB6u,0x62u,0xA6u,0x7Eu}},
-    {0x5468u, {0x7Fu,0xFEu,0x40u,0x06u,0x40u,0x02u,0x4Fu,0xF2u,0x41u,0x82u,0x41u,0x82u,0x5Fu,0xFAu,0x40u,0x02u,0x4Fu,0xE2u,0x4Cu,0x22u,0x4Cu,0x22u,0xCFu,0xE2u,0x8Cu,0x02u,0x80u,0x06u,0x00u,0x3Eu,0x00u,0x00u}},
-    {0x671Fu, {0x46u,0x7Eu,0xFFu,0x46u,0x46u,0x42u,0x46u,0x42u,0x7Eu,0x7Eu,0x46u,0x42u,0x46u,0x42u,0x7Eu,0x42u,0x46u,0x7Eu,0x46u,0x42u,0xFFu,0x42u,0x6Cu,0xC2u,0x62u,0x86u,0xC1u,0x9Eu,0x81u,0x00u,0x00u,0x00u}},
-    {0x9009u, {0x40u,0x60u,0x42u,0x60u,0x66u,0x60u,0x27u,0xFEu,0x04u,0x60u,0x0Cu,0x60u,0xE0u,0x60u,0x6Fu,0xFFu,0x61u,0x30u,0x61u,0x32u,0x63u,0x32u,0x66u,0x32u,0x6Cu,0x1Eu,0xB8u,0x00u,0x0Fu,0xFEu,0x00u,0x00u}},
-    {0x6539u, {0x00u,0xC0u,0xFCu,0x80u,0x0Du,0xFFu,0x0Du,0x8Cu,0x0Du,0x0Cu,0x0Fu,0x88u,0xFFu,0x88u,0xC0u,0x98u,0xC0u,0xD8u,0xC4u,0x70u,0xCCu,0x70u,0xD8u,0x70u,0xE1u,0xD8u,0xC7u,0x0Eu,0x86u,0x02u,0x00u,0x00u}}
+static const uint8_t epd_lut[29] = {
+    0x50, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x11, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x0F, 0x0F, 0x0F,
+    0x0F, 0x0F, 0x0F, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
-static const uint16_t epd_label_settings[] = {0x8BBEu, 0x7F6Eu};
-static const uint16_t epd_label_sample[] = {0x91C7u, 0x6837u};
-static const uint16_t epd_label_alarm_temp[] = {0x62A5u, 0x8B66u, 0x6E29u, 0x5EA6u};
-static const uint16_t epd_label_storage[] = {0x8BB0u, 0x5F55u, 0x6761u, 0x6570u};
-static const uint16_t epd_label_alarm_time[] = {0x62A5u, 0x8B66u, 0x65F6u, 0x957Fu};
-static const uint16_t epd_label_hourglass[] = {0x6C99u, 0x6F0Fu, 0x5468u, 0x671Fu};
-
-static const EpdSettingRow epd_setting_rows[] = {
-    {epd_label_sample, (uint8_t)EPD_ARRAY_COUNT(epd_label_sample), 0x79D2u},
-    {epd_label_alarm_temp, (uint8_t)EPD_ARRAY_COUNT(epd_label_alarm_temp), 0x5EA6u},
-    {epd_label_storage, (uint8_t)EPD_ARRAY_COUNT(epd_label_storage), 0x6761u},
-    {epd_label_alarm_time, (uint8_t)EPD_ARRAY_COUNT(epd_label_alarm_time), 0x79D2u},
-    {epd_label_hourglass, (uint8_t)EPD_ARRAY_COUNT(epd_label_hourglass), 0x79D2u}
+static const uint8_t epd_partial_lut[30] = {
+    0x99, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x0F, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
+
+static const uint8_t epd_alt_lut[90] = {
+    0x82, 0x00, 0x00, 0x00, 0xAA, 0x00, 0x00, 0x00,
+    0xAA, 0xAA, 0x00, 0x00, 0xAA, 0xAA, 0xAA, 0x00,
+    0x55, 0xAA, 0xAA, 0x00, 0x55, 0x55, 0x55, 0x55,
+    0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
+    0xAA, 0xAA, 0xAA, 0xAA, 0x15, 0x15, 0x15, 0x15,
+    0x05, 0x05, 0x05, 0x05, 0x01, 0x01, 0x01, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x41, 0x45, 0xF1, 0xFF, 0x5F, 0x55, 0x01, 0x00,
+    0x00, 0x00
+};
+
+#define EPD_VIEW_CURRENT            0u /* 当前温度主界面渲染目标。 */
+#define EPD_VIEW_HISTORY            1u /* Flash 历史记录界面渲染目标。 */
+#define EPD_VIEW_SETTINGS           2u /* 设置界面渲染目标。 */
+#define EPD_VIEW_GIF                3u /* 全屏 GIF 动画播放界面渲染目标。 */
+#define EPD_VIEW_TEXT               4u /* 文本阅读界面渲染目标。 */
+#define EPD_SETTINGS_ROWS           5u /* 设置页面显示的配置项数量。 */
+#define EPD_HOURGLASS_X             198 /* SSD1673 主界面沙漏默认 X 坐标，资源索引缺失时使用。 */
+#define EPD_HOURGLASS_Y             12  /* SSD1673 主界面沙漏默认 Y 坐标，资源索引缺失时使用。 */
+#define EPD_ALT_HOURGLASS_X         120 /* 备用驱动主界面沙漏 X 坐标。 */
+#define EPD_ALT_HOURGLASS_Y         4   /* 备用驱动主界面沙漏 Y 坐标。 */
+#define EPD_ZHENG_X                 170 /* SSD1673 主界面“郑”字绘制 X 坐标，位于沙漏左侧。 */
+#define EPD_ZHENG_Y                 38  /* SSD1673 主界面“郑”字绘制 Y 坐标。 */
+#define EPD_ALT_ZHENG_X             94  /* 备用驱动主界面“郑”字绘制 X 坐标。 */
+#define EPD_ALT_ZHENG_Y             96  /* 备用驱动主界面“郑”字绘制 Y 坐标。 */
+#define EPD_TEXT_TOP_Y              14u /* SSD1673 阅读页正文起始 Y 坐标。 */
+#define EPD_TEXT_ALT_TOP_Y          12u /* 备用驱动阅读页正文起始 Y 坐标。 */
+#define EPD_TEXT_LINES              6u  /* SSD1673 阅读页正文行数。 */
+#define EPD_TEXT_ALT_LINES          7u  /* 备用驱动阅读页正文行数。 */
 
 static uint8_t g_epd_auto_update = 1;
 static uint8_t g_epd_driver = EPD_DRIVER_SSD1673;
@@ -159,19 +134,19 @@ static int32_t g_tmp_avg_sum_t10 = 0;
 static uint8_t g_tmp_avg_count = 0;
 static int16_t g_tmp_avg_display_t10 = INVALID_T10;
 
-/* 鍓嶇疆澹版槑 SSD1673 瀛楃涓茬粯鍒跺嚱鏁帮紝渚涙矙婕忓瓧骞曟彁鍓嶈皟鐢ㄣ€?*/
+/* 前置声明 SSD1673 字符串绘制函数，供沙漏字幕提前调用。 */
 static void epd_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale);
 
-/* 鍓嶇疆澹版槑澶囩敤椹卞姩瀛楃涓茬粯鍒跺嚱鏁帮紝渚涙矙婕忓瓧骞曟彁鍓嶈皟鐢ㄣ€?*/
+/* 前置声明备用驱动字符串绘制函数，供沙漏字幕提前调用。 */
 static void epd_alt_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale);
 
-/* 璁＄畻褰撳墠娌欐紡鍛ㄦ湡瀵瑰簲鐨?10ms 鑺傛媿鏁般€?*/
+/* 计算当前沙漏周期对应的 10ms 节拍数。 */
 static uint16_t epd_hourglass_period_ticks(void)
 {
     return (uint16_t)((uint16_t)app_hourglass_seconds() * BOARD_TICKS_PER_SECOND);
 }
 
-/* 鏍规嵁褰撳墠绱鐨?TMP 鏍锋湰璁＄畻骞冲潎娓╁害銆?*/
+/* 根据当前累计的 TMP 样本计算平均温度。 */
 static int16_t epd_hourglass_current_avg_t10(void)
 {
     int32_t rounded;
@@ -189,7 +164,7 @@ static int16_t epd_hourglass_current_avg_t10(void)
     return (int16_t)(rounded / (int32_t)g_tmp_avg_count);
 }
 
-/* 缁撴潫褰撳墠缁熻绐楀彛锛屽苟鎶婃渶鍚庝竴娆℃湁鏁堝钩鍧囧€间繚鐣欑粰鐣岄潰鏄剧ず銆?*/
+/* 结束当前统计窗口，并把最后一次有效平均值保留给界面显示。 */
 static void epd_hourglass_reset_avg_window(void)
 {
     if (g_tmp_avg_count > 0) {
@@ -199,7 +174,7 @@ static void epd_hourglass_reset_avg_window(void)
     g_tmp_avg_count = 0;
 }
 
-/* 鏍规嵁绯荤粺鏃堕棿鎺ㄨ繘娌欐紡鍛ㄦ湡锛屽懆鏈熺粨鏉熸椂鍚屾閲嶇疆 TMP 骞冲潎绐楀彛銆?*/
+/* 根据系统时间推进沙漏周期，周期结束时同步重置 TMP 平均窗口。 */
 static uint16_t epd_hourglass_elapsed_ticks(void)
 {
     uint16_t elapsed;
@@ -215,7 +190,7 @@ static uint16_t epd_hourglass_elapsed_ticks(void)
     return elapsed;
 }
 
-/* 鎶婃柊鐨?TMP 鏍锋湰鍔犲叆褰撳墠娌欐紡鍛ㄦ湡鐨勫钩鍧囨俯搴︾粺璁°€?*/
+/* 把新的 TMP 样本加入当前沙漏周期的平均温度统计。 */
 static void epd_hourglass_add_sample(const TempSample *s)
 {
     (void)epd_hourglass_elapsed_ticks();
@@ -230,7 +205,7 @@ static void epd_hourglass_add_sample(const TempSample *s)
     g_tmp_avg_display_t10 = epd_hourglass_current_avg_t10();
 }
 
-/* 鍒ゆ柇褰撳墠娌欐紡鏄惁澶勪簬鍛ㄦ湡鏈熬鐨勭炕杞樁娈碉紝骞惰繑鍥炵炕杞抚鍙枫€?*/
+/* 判断当前沙漏是否处于周期末尾的翻转阶段，并返回翻转帧号。 */
 static uint8_t epd_hourglass_flip_phase(uint16_t elapsed_ticks, uint16_t period_ticks)
 {
     uint16_t flip_start;
@@ -254,14 +229,14 @@ static uint8_t epd_hourglass_flip_phase(uint16_t elapsed_ticks, uint16_t period_
     return (uint8_t)(1u + (uint8_t)(((uint32_t)flip_elapsed * 3u) / flip_ticks));
 }
 
-/* 鏍囪澧ㄦ按灞忔湁鏂扮殑鐩爣鐢婚潰闇€瑕佹覆鏌撱€?*/
+/* 标记墨水屏有新的目标画面需要渲染。 */
 static void epd_request_render(uint8_t urgent)
 {
     (void)urgent;
     g_epd_render_dirty = 1;
 }
 
-/* 鍒ゆ柇褰撳墠鏄惁鍏佽鍚戝ⅷ姘村睆鎻愪氦涓嬩竴甯э紝鎸夐厤缃粺涓€闄愬埗灞忓箷甯х巼銆?*/
+/* 判断当前是否允许向墨水屏提交下一帧，按配置统一限制屏幕帧率。 */
 static uint8_t epd_render_frame_ready(void)
 {
     if (!g_epd_has_render_tick) {
@@ -270,14 +245,14 @@ static uint8_t epd_render_frame_ready(void)
     return board_tick10_elapsed(g_epd_last_render_tick, EPD_RENDER_MIN_TICKS);
 }
 
-/* 璁板綍鏈€杩戜竴娆″疄闄呭埛灞忔椂闂达紝璁╂寜閿搷搴斿拰澧ㄦ按灞忓抚鐜囪В鑰︺€?*/
+/* 记录最近一次实际刷屏时间，让按键响应和墨水屏帧率解耦。 */
 static void epd_note_render_frame(void)
 {
     g_epd_has_render_tick = 1;
     g_epd_last_render_tick = board_tick10();
 }
 
-/* 鍒ゆ柇涓荤晫闈㈣嚜鍔ㄥ姩鐢诲抚鏄惁鍒拌揪鍒锋柊闂撮殧銆?*/
+/* 判断主界面自动动画帧是否到达刷新间隔。 */
 static uint8_t epd_auto_frame_due(void)
 {
     if (!g_epd_auto_update || !g_epd_has_target_sample) {
@@ -286,7 +261,7 @@ static uint8_t epd_auto_frame_due(void)
     return board_tick10_elapsed(g_epd_last_auto_frame_tick, EPD_AUTO_FRAME_TICKS);
 }
 
-/* 鍒ゆ柇鍏ㄥ睆 GIF 鎾斁鐣岄潰鏄惁闇€瑕佹帹杩涘埌涓嬩竴甯с€?*/
+/* 判断全屏 GIF 播放界面是否需要推进到下一帧。 */
 static uint8_t epd_gif_frame_due(void)
 {
     if (!g_epd_gif_playback || g_epd_render_view != EPD_VIEW_GIF) {
@@ -295,16 +270,16 @@ static uint8_t epd_gif_frame_due(void)
     return board_tick10_elapsed(g_epd_last_gif_frame_tick, EPD_AUTO_FRAME_TICKS);
 }
 
-/* 鏍规嵁鍘嗗彶璁板綍鏁伴噺璁＄畻鑷姩鎾斁鏃朵紭鍏堟樉绀烘渶杩戣褰曠殑璧峰涓嬫爣銆?*/
+/* 根据历史记录数量计算自动播放时优先显示最近记录的起始下标。 */
 static uint16_t epd_history_latest_start(uint16_t count)
 {
-    if (count <= HISTORY_PAGE_ROWS) {
+    if (count <= HISTORY_ROWS_ON_EPD) {
         return 0;
     }
-    return (uint16_t)(count - HISTORY_PAGE_ROWS);
+    return (uint16_t)(count - HISTORY_ROWS_ON_EPD);
 }
 
-/* 鍒ゆ柇鍘嗗彶璁板綍鑷姩鎾斁鏄惁闇€瑕佹粴鍔ㄥ埌涓嬩竴椤点€?*/
+/* 判断历史记录自动播放是否需要滚动到下一页。 */
 static uint8_t epd_history_frame_due(void)
 {
     uint16_t count;
@@ -317,7 +292,7 @@ static uint8_t epd_history_frame_due(void)
     }
 
     count = history_count();
-    if (count == 0 || count <= HISTORY_PAGE_ROWS) {
+    if (count == 0 || count <= HISTORY_ROWS_ON_EPD) {
         g_epd_target_history_start = 0;
     } else {
         g_epd_target_history_start++;
@@ -329,22 +304,428 @@ static uint8_t epd_history_frame_due(void)
     return 1;
 }
 
-/* 调用底层 SSD1673 面板驱动初始化，渲染层不直接操作 GPIO/SPI。 */
-static void epd_ssd_init_controller_and_clear(void)
+/* 将墨水屏 SPI 控制线恢复到空闲电平。 */
+static void epd_bus_idle(void)
 {
-    epd_panel_ssd_init_controller_and_clear();
+    EPD_CS_OUT |= EPD_CS_BIT;
+    EPD_CLK_OUT &= ~EPD_CLK_BIT;
+    EPD_SDI_OUT &= ~EPD_SDI_BIT;
+    EPD_DC_OUT |= EPD_DC_BIT;
 }
 
-/* 调用底层 SSD1673 局部刷新提交。 */
+/* 初始化墨水屏使用的 GPIO 和软件 SPI 引脚方向。 */
+static void spi0_init(void)
+{
+    EPD_BUSY_SEL &= ~EPD_BUSY_BIT;
+    EPD_RST_SEL &= ~EPD_RST_BIT;
+    EPD_DC_SEL &= ~EPD_DC_BIT;
+    EPD_CS_SEL &= ~EPD_CS_BIT;
+    EPD_SDI_SEL &= ~EPD_SDI_BIT;
+    EPD_CLK_SEL &= ~EPD_CLK_BIT;
+
+    EPD_RST_OUT |= EPD_RST_BIT;
+    epd_bus_idle();
+
+    EPD_BUSY_DIR &= ~EPD_BUSY_BIT;
+    EPD_RST_DIR |= EPD_RST_BIT;
+    EPD_DC_DIR |= EPD_DC_BIT;
+    EPD_CS_DIR |= EPD_CS_BIT;
+    EPD_SDI_DIR |= EPD_SDI_BIT;
+    EPD_CLK_DIR |= EPD_CLK_BIT;
+
+    EPD_RST_OUT |= EPD_RST_BIT;
+    epd_bus_idle();
+}
+
+/* 通过软件 SPI 向墨水屏发送一个字节。 */
+static void spi0_write(uint8_t value)
+{
+    uint8_t bit;
+
+    for (bit = 0; bit < 8u; bit++) {
+        if (value & 0x80u) {
+            EPD_SDI_OUT |= EPD_SDI_BIT;
+        } else {
+            EPD_SDI_OUT &= ~EPD_SDI_BIT;
+        }
+        EPD_CLK_OUT |= EPD_CLK_BIT;
+        EPD_CLK_OUT &= ~EPD_CLK_BIT;
+        value = (uint8_t)(value << 1);
+    }
+}
+
+/* 控制墨水屏片选信号，selected 为 1 时选中屏幕。 */
+static void epd_select(uint8_t selected)
+{
+    if (selected) {
+        EPD_CS_OUT &= ~EPD_CS_BIT;
+    } else {
+        EPD_CS_OUT |= EPD_CS_BIT;
+    }
+}
+
+/* 向墨水屏控制器发送一个命令字节。 */
+static void epd_cmd(uint8_t cmd)
+{
+    epd_select(0);
+    epd_select(1);
+    EPD_CLK_OUT &= ~EPD_CLK_BIT;
+    EPD_DC_OUT &= ~EPD_DC_BIT;
+    spi0_write(cmd);
+    epd_select(0);
+}
+
+/* 向墨水屏控制器发送一个数据字节。 */
+static void epd_data(uint8_t data)
+{
+    epd_select(0);
+    epd_select(1);
+    EPD_CLK_OUT &= ~EPD_CLK_BIT;
+    EPD_DC_OUT |= EPD_DC_BIT;
+    spi0_write(data);
+    epd_select(0);
+}
+
+/* 进入连续数据写入状态，减少每字节切片选的开销。 */
+static void epd_data_stream_start(void)
+{
+    epd_select(0);
+    epd_select(1);
+    EPD_CLK_OUT &= ~EPD_CLK_BIT;
+    EPD_DC_OUT |= EPD_DC_BIT;
+}
+
+/* 在连续数据写入状态下发送一个数据字节。 */
+static void epd_data_stream_write(uint8_t data)
+{
+    spi0_write(data);
+}
+
+/* 结束连续数据写入并释放片选。 */
+static void epd_data_stream_end(void)
+{
+    epd_select(0);
+}
+
+/* 等待 BUSY 引脚释放，超时返回 0。 */
+static uint8_t epd_wait_busy(uint16_t timeout_ms)
+{
+    while ((EPD_BUSY_IN & EPD_BUSY_BIT) && timeout_ms > 0) {
+        delay_ms(1);
+        timeout_ms--;
+    }
+    if (EPD_BUSY_IN & EPD_BUSY_BIT) {
+        return 0;
+    }
+    delay_ms(20);
+    return 1;
+}
+
+/* 触发刷新后等待 BUSY 完成，并补充控制器稳定等待时间。 */
+static uint8_t epd_wait_update_done(uint16_t post_update_ms, uint16_t no_busy_wait_ms)
+{
+    uint16_t timeout_ms;
+    uint8_t saw_busy;
+
+    timeout_ms = EPD_BUSY_START_TIMEOUT_MS;
+    saw_busy = 0;
+    while (timeout_ms > 0) {
+        if (EPD_BUSY_IN & EPD_BUSY_BIT) {
+            saw_busy = 1;
+            break;
+        }
+        delay_ms(1);
+        timeout_ms--;
+    }
+
+    if (saw_busy) {
+        if (!epd_wait_busy(EPD_BUSY_TIMEOUT_MS)) {
+            return 0;
+        }
+    } else {
+        delay_ms(no_busy_wait_ms);
+    }
+
+    delay_ms(post_update_ms);
+    return saw_busy;
+}
+
+/* 对墨水屏执行硬件复位时序。 */
+static void epd_reset(void)
+{
+    epd_bus_idle();
+    EPD_RST_OUT |= EPD_RST_BIT;
+    delay_ms(EPD_RESET_PRE_MS);
+    EPD_RST_OUT &= ~EPD_RST_BIT;
+    delay_ms(EPD_RESET_LOW_MS);
+    EPD_RST_OUT |= EPD_RST_BIT;
+    delay_ms(EPD_RESET_HIGH_MS);
+    epd_bus_idle();
+}
+
+/* 发送控制器软复位命令并等待其恢复可用。 */
+static uint8_t epd_soft_reset(void)
+{
+    uint16_t timeout_ms;
+    uint8_t saw_busy;
+
+    epd_cmd(0x12);
+    delay_ms(1);
+
+    timeout_ms = EPD_BUSY_START_TIMEOUT_MS;
+    saw_busy = 0;
+    while (timeout_ms > 0) {
+        if (EPD_BUSY_IN & EPD_BUSY_BIT) {
+            saw_busy = 1;
+            break;
+        }
+        delay_ms(1);
+        timeout_ms--;
+    }
+
+    if (saw_busy) {
+        return epd_wait_busy(EPD_BUSY_TIMEOUT_MS);
+    }
+
+    delay_ms(100);
+    return 1;
+}
+
+/* 在无法确定上电状态时重新初始化总线并复位控制器。 */
+static void epd_recover_from_unknown_state(void)
+{
+    spi0_init();
+    delay_ms(EPD_STARTUP_SETTLE_MS);
+    epd_reset();
+    (void)epd_wait_busy(EPD_BUSY_TIMEOUT_MS);
+    (void)epd_soft_reset();
+    (void)epd_wait_busy(EPD_BUSY_TIMEOUT_MS);
+}
+
+/* 写入 SSD1673 全屏刷新波形表。 */
+static void epd_write_lut(void)
+{
+    uint8_t i;
+
+    epd_cmd(0x32);
+    epd_data_stream_start();
+    for (i = 0; i < sizeof(epd_lut); i++) {
+        epd_data_stream_write(epd_lut[i]);
+    }
+    epd_data_stream_end();
+}
+
+/* 写入 SSD1673 局部刷新波形表。 */
+static void epd_write_partial_lut(void)
+{
+    uint8_t i;
+
+    epd_cmd(0x32);
+    epd_data_stream_start();
+    for (i = 0; i < sizeof(epd_partial_lut); i++) {
+        epd_data_stream_write(epd_partial_lut[i]);
+    }
+    epd_data_stream_end();
+}
+
+/* 写入备用墨水屏驱动使用的波形表。 */
+static void epd_alt_write_lut(void)
+{
+    uint8_t i;
+
+    epd_cmd(0x32);
+    epd_data_stream_start();
+    for (i = 0; i < sizeof(epd_alt_lut); i++) {
+        epd_data_stream_write(epd_alt_lut[i]);
+    }
+    epd_data_stream_end();
+}
+
+/* 设置 SSD1673 的原生 RAM 写入窗口。 */
+static void epd_set_ram_area(void)
+{
+    epd_cmd(0x11);
+    epd_data(0x01);
+    epd_cmd(0x44);
+    epd_data(0x00);
+    epd_data(0x0F);
+    epd_cmd(0x45);
+    epd_data(0xF9);
+    epd_data(0x00);
+}
+
+/* 将 SSD1673 RAM 写入游标移动到窗口起点。 */
+static void epd_set_ram_cursor(void)
+{
+    epd_cmd(0x4E);
+    epd_data(0x00);
+    epd_cmd(0x4F);
+    epd_data(0xF9);
+}
+
+/* 设置备用驱动的 RAM 写入窗口和游标。 */
+static void epd_alt_set_ram_area(void)
+{
+    epd_cmd(0x11);
+    epd_data(0x03);
+    epd_cmd(0x44);
+    epd_data(0x00);
+    epd_data(0x11);
+    epd_cmd(0x45);
+    epd_data(0x00);
+    epd_data(0xAB);
+    epd_cmd(0x4E);
+    epd_data(0x00);
+    epd_cmd(0x4F);
+    epd_data(0xAB);
+}
+
+/* 使用指定刷新控制字触发一次墨水屏刷新。 */
+static uint8_t epd_update_with_ctrl(uint8_t ctrl, uint16_t post_update_ms, uint16_t no_busy_wait_ms)
+{
+    uint8_t saw_busy;
+
+    epd_cmd(0x22);
+    epd_data(ctrl);
+    epd_cmd(0x20);
+    delay_ms(1);
+    saw_busy = epd_wait_update_done(post_update_ms, no_busy_wait_ms);
+    return saw_busy;
+}
+
+/* 对 SSD1673 执行一次全屏刷新。 */
+static uint8_t epd_update(void)
+{
+    return epd_update_with_ctrl(EPD_UPDATE_CTRL_FULL, EPD_FULL_POST_UPDATE_MS, EPD_FULL_POST_UPDATE_MS);
+}
+
+/* 对备用驱动执行一次局部刷新，并让控制器回到待机刷新状态。 */
+static uint8_t epd_alt_update(void)
+{
+    uint8_t saw_busy;
+
+    epd_cmd(0x21);
+    epd_data(0x83);
+    epd_cmd(0x22);
+    epd_data(0xC4);
+    epd_cmd(0x20);
+    delay_ms(100);
+    saw_busy = epd_wait_update_done(EPD_PARTIAL_POST_UPDATE_MS, EPD_NO_BUSY_FALLBACK_MS);
+
+    epd_cmd(0x22);
+    epd_data(0x03);
+    epd_cmd(0x20);
+    delay_ms(20);
+    return saw_busy;
+}
+
+/* 准备向 SSD1673 新图像 RAM 写入数据。 */
+static void epd_write_new_ram_start(void)
+{
+    epd_set_ram_area();
+    epd_set_ram_cursor();
+    delay_ms(1);
+    epd_cmd(0x24);
+    delay_ms(1);
+}
+
+/* 用同一个字节填充 SSD1673 新图像 RAM。 */
+static void epd_write_new_ram_fill_only(uint8_t value)
+{
+    uint16_t col;
+    uint16_t row;
+
+    epd_write_new_ram_start();
+    epd_data_stream_start();
+    for (col = 0; col < EPD_RAM_H; col++) {
+        for (row = 0; row < EPD_RAM_W_BYTES; row++) {
+            epd_data_stream_write(value);
+        }
+    }
+    epd_data_stream_end();
+}
+
+/* 将帧缓冲内容写入 SSD1673 新图像 RAM，但暂不触发刷新。 */
+static void epd_write_new_ram_buffer_only(const uint8_t *buf)
+{
+    uint16_t i;
+
+    epd_write_new_ram_start();
+    epd_data_stream_start();
+    for (i = 0; i < EPD_BUF_SIZE; i++) {
+        epd_data_stream_write(buf[i]);
+    }
+    epd_data_stream_end();
+}
+
+/* 将帧缓冲内容写入备用驱动的图像 RAM，但暂不触发刷新。 */
+static void epd_alt_write_ram_buffer_only(const uint8_t *buf)
+{
+    uint16_t i;
+
+    epd_alt_set_ram_area();
+    epd_cmd(0x24);
+    epd_data_stream_start();
+    for (i = 0; i < EPD_ALT_BUF_SIZE; i++) {
+        epd_data_stream_write(buf[i]);
+    }
+    epd_data_stream_end();
+}
+
+/* 将当前帧缓冲通过 SSD1673 局部刷新送到屏幕。 */
 static uint8_t epd_write_buffer_to_screen_partial(const uint8_t *buf)
 {
-    return epd_panel_ssd_flush_partial(buf);
+    uint8_t busy_seen;
+
+    epd_write_partial_lut();
+    epd_cmd(0x21);
+    epd_data(0x03);
+    epd_cmd(0x3C);
+    epd_data(0x73);
+    epd_write_new_ram_buffer_only(buf);
+    busy_seen = epd_update_with_ctrl(EPD_UPDATE_CTRL_PARTIAL, EPD_PARTIAL_POST_UPDATE_MS, EPD_NO_BUSY_FALLBACK_MS);
+    epd_write_new_ram_buffer_only(buf);
+    return busy_seen;
 }
 
-/* 调用底层备用面板刷新提交。 */
+/* 将当前帧缓冲送到备用驱动并触发刷新。 */
 static uint8_t epd_alt_write_buffer_to_screen(const uint8_t *buf)
 {
-    return epd_panel_alt_flush(buf);
+    epd_alt_write_ram_buffer_only(buf);
+    return epd_alt_update();
+}
+
+/* 初始化 SSD1673 控制器并清成白底，为后续局部刷新建立基准。 */
+static void epd_ssd_init_controller_and_clear(void)
+{
+    EPD_BUSY_REN &= ~EPD_BUSY_BIT;
+
+    epd_recover_from_unknown_state();
+
+    epd_cmd(0x01);
+    epd_data(0xF9);
+    epd_data(0x00);
+    epd_cmd(0x3A);
+    epd_data(0x06);
+    epd_cmd(0x3B);
+    epd_data(0x0B);
+    epd_cmd(0x3C);
+    epd_data(0x33);
+    epd_set_ram_area();
+
+    epd_cmd(0x2C);
+    epd_data(0x4B);
+    epd_write_lut();
+
+    epd_cmd(0x21);
+    epd_data(0x83);
+    epd_write_new_ram_fill_only(0xFF);
+    epd_update();
+    epd_cmd(0x21);
+    epd_data(0x03);
+    epd_cmd(0x3C);
+    epd_data(0x73);
+    epd_write_partial_lut();
 }
 
 void epd_init(void)
@@ -369,12 +750,41 @@ void epd_init(void)
     g_tmp_avg_display_t10 = INVALID_T10;
 }
 
-/* 鍒濆鍖栧鐢ㄥⅷ姘村睆鎺у埗鍣ㄣ€?*/
+/* 初始化备用墨水屏控制器。 */
 static void epd_alt_init(void)
 {
-    epd_panel_alt_init();
+    EPD_BUSY_REN &= ~EPD_BUSY_BIT;
+
+    epd_recover_from_unknown_state();
+
+    epd_cmd(0x10);
+    epd_data(0x00);
+    epd_cmd(0x11);
+    epd_data(0x03);
+    epd_cmd(0x44);
+    epd_data(0x00);
+    epd_data(0x11);
+    epd_cmd(0x45);
+    epd_data(0x00);
+    epd_data(0xAB);
+    epd_cmd(0x4E);
+    epd_data(0x00);
+    epd_cmd(0x4F);
+    epd_data(0xAB);
+    epd_cmd(0x21);
+    epd_data(0x03);
+    epd_cmd(0xF0);
+    epd_data(0x1F);
+    epd_cmd(0x2C);
+    epd_data(0xA0);
+    epd_cmd(0x3C);
+    epd_data(0x63);
+    epd_cmd(0x22);
+    epd_data(0xC4);
+    epd_alt_write_lut();
 }
 
+/* 清空 SSD1673 渲染帧缓冲，0xFF 表示白色像素。 */
 static void epd_clear_buffer(void)
 {
     uint16_t i;
@@ -384,7 +794,7 @@ static void epd_clear_buffer(void)
     }
 }
 
-/* 鍦?SSD1673 閫昏緫鍧愭爣涓啓鍏ヤ竴涓儚绱犮€?*/
+/* 在 SSD1673 逻辑坐标中写入一个像素。 */
 static void epd_pixel(uint16_t x, uint16_t y, uint8_t black)
 {
     uint16_t ram_x;
@@ -408,7 +818,7 @@ static void epd_pixel(uint16_t x, uint16_t y, uint8_t black)
     }
 }
 
-/* 鍦?SSD1673 甯х紦鍐蹭腑濉厖涓€涓皬鐭╁舰锛岀敤浜庡眬閮ㄦ竻鍑鸿皟璇曟爣璇嗚儗鏅€?*/
+/* 在 SSD1673 帧缓冲中填充一个小矩形，用于局部清出调试标识背景。 */
 static void epd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t black)
 {
     uint16_t px;
@@ -421,7 +831,7 @@ static void epd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_
     }
 }
 
-/* 鏍规嵁娌欐紡鍛ㄦ湡鏃堕棿閫夋嫨鍥剧墖鍏抽敭甯э紝鏈熬鎸夌炕杞椂闀挎槧灏勫埌鏈€鍚庡嚑甯с€?*/
+/* 根据沙漏周期时间选择图片关键帧，末尾按翻转时长映射到最后几帧。 */
 static uint8_t epd_hourglass_asset_frame_index(uint8_t frame_count)
 {
     uint16_t elapsed;
@@ -463,7 +873,7 @@ static uint8_t epd_hourglass_asset_frame_index(uint8_t frame_count)
     return index;
 }
 
-/* 鎶婁竴琛?1bpp 鏁版嵁璐村埌 SSD1673 甯х紦鍐层€?*/
+/* 把一行 1bpp 数据贴到 SSD1673 帧缓冲。 */
 static void epd_draw_1bpp_row(uint16_t width, const uint8_t *row, uint16_t py,
                               int16_t x, int16_t y, uint8_t scale)
 {
@@ -490,7 +900,7 @@ static void epd_draw_1bpp_row(uint16_t width, const uint8_t *row, uint16_t py,
     }
 }
 
-/* 浠庡綋鍓嶅浘鐗囪祫婧愭寜琛岃鍙栧苟璐村埌 SSD1673 甯х紦鍐层€?*/
+/* 从当前图片资源按行读取并贴到 SSD1673 帧缓冲。 */
 static uint8_t epd_draw_image_rows(const AppImageInfo *info, int16_t x, int16_t y)
 {
     uint16_t py;
@@ -510,7 +920,7 @@ static uint8_t epd_draw_image_rows(const AppImageInfo *info, int16_t x, int16_t 
     return 1;
 }
 
-/* 鎸夊抚鏁板惊鐜帹杩涘浘鐗囧抚娓告爣銆?*/
+/* 按帧数循环推进图片帧游标。 */
 static uint8_t epd_next_frame_index(uint8_t frame_count, uint8_t *cursor)
 {
     uint8_t index;
@@ -530,7 +940,7 @@ static uint8_t epd_next_frame_index(uint8_t frame_count, uint8_t *cursor)
     return index;
 }
 
-/* 璁＄畻鎸囧畾灏哄鍥剧墖鍦ㄥ睆骞曞崟鏂瑰悜涓婄殑灞呬腑鍧愭爣銆?*/
+/* 计算指定尺寸图片在屏幕单方向上的居中坐标。 */
 static int16_t epd_center_coord(uint16_t image_size, uint16_t screen_size, uint8_t scale)
 {
     if (scale == 0) {
@@ -543,7 +953,7 @@ static int16_t epd_center_coord(uint16_t image_size, uint16_t screen_size, uint8
     return (int16_t)((screen_size - image_size) / 2u);
 }
 
-/* 鍦?SSD1673 甯х紦鍐蹭腑缁樺埗璧勬簮瀛楀簱閲岀殑鈥滈儜鈥濆瓧鐐归樀銆?*/
+/* 在 SSD1673 帧缓冲中绘制资源字库里的“郑”字点阵。 */
 static void epd_draw_zheng_glyph(int16_t x, int16_t y)
 {
     AppGlyphInfo info;
@@ -560,7 +970,7 @@ static void epd_draw_zheng_glyph(int16_t x, int16_t y)
     }
 }
 
-/* 鍦?SSD1673 甯х紦鍐蹭腑缁樺埗娌欐紡鍥剧墖涓嬫柟鐨勫懆鏈熷拰 TMP 骞冲潎娓╁害鏂囧瓧銆?*/
+/* 在 SSD1673 帧缓冲中绘制沙漏图片下方的周期和 TMP 平均温度文字。 */
 static void epd_draw_hourglass_caption(uint16_t x, uint16_t y)
 {
     char line[16];
@@ -577,7 +987,7 @@ static void epd_draw_hourglass_caption(uint16_t x, uint16_t y)
     epd_draw_string((uint16_t)(x + 5u), (uint16_t)(y + 10u), line, 1);
 }
 
-/* 鍦?SSD1673 涓荤晫闈㈠彸渚у姞杞芥矙婕忓浘鐗囧叧閿抚骞剁粯鍒跺钩鍧囨俯搴﹁鏄庛€?*/
+/* 在 SSD1673 主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
 static void epd_draw_hourglass(void)
 {
     AppImageInfo info;
@@ -599,14 +1009,14 @@ static void epd_draw_hourglass(void)
     epd_draw_hourglass_caption((uint16_t)(x + 4), (uint16_t)(y + 68));
 }
 
-/* 鍦?GIF 椤甸潰宸︿笂瑙掓爣璁板綋鍓嶅抚鏉ユ簮鎴栧け璐ョ姸鎬併€?*/
+/* 在 GIF 页面左上角标记当前帧来源或失败状态。 */
 static void epd_draw_gif_source_tag(const char *label)
 {
     epd_fill_rect(0, 0, 36, 10, 0);
     epd_draw_string(2, 2, label, 1);
 }
 
-/* GIF 璧勬簮涓嶅彲鐢ㄦ椂鏄剧ず鏄庣‘鐘舵€侊紝閬垮厤璇互涓鸿繕鍦ㄦ甯告挱鏀俱€?*/
+/* GIF 资源不可用时显示明确状态，避免误以为还在正常播放。 */
 static void epd_draw_gif_missing(void)
 {
     epd_draw_gif_source_tag("NO SD");
@@ -614,7 +1024,7 @@ static void epd_draw_gif_missing(void)
     epd_draw_string(72, 72, "MASCOT.BIN", 1);
 }
 
-/* 鎸夎璇诲彇 GIF 璧勬簮甯у苟璐村埌 SSD1673 甯х紦鍐诧紝閬垮厤鍗犵敤鏁村抚 RAM 缂撳瓨銆?*/
+/* 按行读取 GIF 资源帧并贴到 SSD1673 帧缓冲，避免占用整帧 RAM 缓存。 */
 static uint8_t epd_draw_gif_resource_frame(const AppImageInfo *info)
 {
     int16_t x;
@@ -635,7 +1045,7 @@ static uint8_t epd_draw_gif_resource_frame(const AppImageInfo *info)
     return 1;
 }
 
-/* 鍦?SSD1673 甯х紦鍐蹭腑灞呬腑缁樺埗 GIF 杞崲鍔ㄧ敾褰撳墠甯с€?*/
+/* 在 SSD1673 帧缓冲中居中绘制 GIF 转换动画当前帧。 */
 static void epd_draw_gif_frame(void)
 {
     AppImageInfo info;
@@ -653,7 +1063,7 @@ static void epd_draw_gif_frame(void)
     epd_draw_gif_missing();
 }
 
-/* 浣跨敤 5x7 瀛楀簱鍦?SSD1673 甯х紦鍐蹭腑缁樺埗涓€涓瓧绗︺€?*/
+/* 使用 5x7 字库在 SSD1673 帧缓冲中绘制一个字符。 */
 static void epd_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
 {
     uint8_t col;
@@ -683,7 +1093,7 @@ static void epd_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
     }
 }
 
-/* 浣跨敤 5x7 瀛楀簱鍦?SSD1673 甯х紦鍐蹭腑缁樺埗瀛楃涓层€?*/
+/* 使用 5x7 字库在 SSD1673 帧缓冲中绘制字符串。 */
 static void epd_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale)
 {
     uint16_t cursor;
@@ -697,13 +1107,13 @@ static void epd_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale
     }
 }
 
-/* 鎶?SSD1673 甯х紦鍐蹭互灞€閮ㄥ埛鏂版柟寮忔彁浜ゅ埌灞忓箷銆?*/
+/* 把 SSD1673 帧缓冲以局部刷新方式提交到屏幕。 */
 static void epd_flush_partial(void)
 {
     (void)epd_write_buffer_to_screen_partial(epd_buf);
 }
 
-/* 娓呯┖澶囩敤椹卞姩娓叉煋甯х紦鍐诧紝0xFF 琛ㄧず鐧借壊鍍忕礌銆?*/
+/* 清空备用驱动渲染帧缓冲，0xFF 表示白色像素。 */
 static void epd_alt_clear_buffer(void)
 {
     uint16_t i;
@@ -727,7 +1137,7 @@ void epd_full_refresh_once(void)
     epd_request_render(1);
 }
 
-/* 鍦ㄥ鐢ㄩ┍鍔ㄩ€昏緫鍧愭爣涓啓鍏ヤ竴涓儚绱犮€?*/
+/* 在备用驱动逻辑坐标中写入一个像素。 */
 static void epd_alt_pixel(uint16_t x, uint16_t y, uint8_t black)
 {
     uint16_t index;
@@ -747,7 +1157,7 @@ static void epd_alt_pixel(uint16_t x, uint16_t y, uint8_t black)
     }
 }
 
-/* 鍦ㄥ鐢ㄩ┍鍔ㄥ抚缂撳啿涓～鍏呬竴涓皬鐭╁舰锛岀敤浜庡眬閮ㄦ竻鍑鸿皟璇曟爣璇嗚儗鏅€?*/
+/* 在备用驱动帧缓冲中填充一个小矩形，用于局部清出调试标识背景。 */
 static void epd_alt_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t black)
 {
     uint16_t px;
@@ -760,7 +1170,7 @@ static void epd_alt_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, ui
     }
 }
 
-/* 鎶婁竴琛?1bpp 鏁版嵁璐村埌澶囩敤椹卞姩甯х紦鍐层€?*/
+/* 把一行 1bpp 数据贴到备用驱动帧缓冲。 */
 static void epd_alt_draw_1bpp_row(uint16_t width, const uint8_t *row, uint16_t py,
                                   int16_t x, int16_t y, uint8_t scale)
 {
@@ -787,7 +1197,7 @@ static void epd_alt_draw_1bpp_row(uint16_t width, const uint8_t *row, uint16_t p
     }
 }
 
-/* 鍦ㄥ鐢ㄩ┍鍔ㄥ抚缂撳啿涓粯鍒?24x24 鐨勨€滈儜鈥濆瓧鐐归樀銆?*/
+/* 在备用驱动帧缓冲中绘制 24x24 的“郑”字点阵。 */
 static void epd_alt_draw_zheng_glyph(int16_t x, int16_t y)
 {
     AppGlyphInfo info;
@@ -804,7 +1214,7 @@ static void epd_alt_draw_zheng_glyph(int16_t x, int16_t y)
     }
 }
 
-/* 鍦ㄥ鐢ㄩ┍鍔ㄥ抚缂撳啿涓粯鍒舵矙婕忓浘鐗囦笅鏂圭殑鍛ㄦ湡鍜?TMP 骞冲潎娓╁害鏂囧瓧銆?*/
+/* 在备用驱动帧缓冲中绘制沙漏图片下方的周期和 TMP 平均温度文字。 */
 static void epd_alt_draw_hourglass_caption(uint16_t x, uint16_t y)
 {
     char line[16];
@@ -821,7 +1231,7 @@ static void epd_alt_draw_hourglass_caption(uint16_t x, uint16_t y)
     epd_alt_draw_string((uint16_t)(x + 5u), (uint16_t)(y + 10u), line, 1);
 }
 
-/* 浠庡綋鍓嶅浘鐗囪祫婧愭寜琛岃鍙栧苟璐村埌澶囩敤椹卞姩甯х紦鍐层€?*/
+/* 从当前图片资源按行读取并贴到备用驱动帧缓冲。 */
 static uint8_t epd_alt_draw_image_rows(const AppImageInfo *info, int16_t x, int16_t y)
 {
     uint16_t py;
@@ -841,7 +1251,7 @@ static uint8_t epd_alt_draw_image_rows(const AppImageInfo *info, int16_t x, int1
     return 1;
 }
 
-/* 鍦ㄥ鐢ㄩ┍鍔ㄤ富鐣岄潰鍙充晶鍔犺浇娌欐紡鍥剧墖鍏抽敭甯у苟缁樺埗骞冲潎娓╁害璇存槑銆?*/
+/* 在备用驱动主界面右侧加载沙漏图片关键帧并绘制平均温度说明。 */
 static void epd_alt_draw_hourglass(void)
 {
     AppImageInfo info;
@@ -861,14 +1271,14 @@ static void epd_alt_draw_hourglass(void)
     epd_alt_draw_hourglass_caption((uint16_t)(x + 4), (uint16_t)(y + 68));
 }
 
-/* 鍦ㄥ鐢?GIF 椤甸潰宸︿笂瑙掓爣璁板綋鍓嶅抚鏉ユ簮鎴栧け璐ョ姸鎬併€?*/
+/* 在备用 GIF 页面左上角标记当前帧来源或失败状态。 */
 static void epd_alt_draw_gif_source_tag(const char *label)
 {
     epd_alt_fill_rect(0, 0, 36, 10, 0);
     epd_alt_draw_string(2, 2, label, 1);
 }
 
-/* 澶囩敤椹卞姩涓嬬殑 GIF 璧勬簮缂哄け鎻愮ず銆?*/
+/* 备用驱动下的 GIF 资源缺失提示。 */
 static void epd_alt_draw_gif_missing(void)
 {
     epd_alt_draw_gif_source_tag("NO SD");
@@ -876,7 +1286,7 @@ static void epd_alt_draw_gif_missing(void)
     epd_alt_draw_string(36, 80, "MASCOT.BIN", 1);
 }
 
-/* 鎸夎璇诲彇 GIF 璧勬簮甯у苟璐村埌澶囩敤椹卞姩甯х紦鍐层€?*/
+/* 按行读取 GIF 资源帧并贴到备用驱动帧缓冲。 */
 static uint8_t epd_alt_draw_gif_resource_frame(const AppImageInfo *info)
 {
     int16_t x;
@@ -897,7 +1307,7 @@ static uint8_t epd_alt_draw_gif_resource_frame(const AppImageInfo *info)
     return 1;
 }
 
-/* 浣跨敤澶囩敤椹卞姩娓叉煋鍏ㄥ睆 GIF 鍔ㄧ敾褰撳墠甯с€?*/
+/* 使用备用驱动渲染全屏 GIF 动画当前帧。 */
 static void epd_alt_show_gif(void)
 {
     AppImageInfo info;
@@ -918,7 +1328,7 @@ static void epd_alt_show_gif(void)
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
-/* 浣跨敤 5x7 瀛楀簱鍦ㄥ鐢ㄩ┍鍔ㄥ抚缂撳啿涓粯鍒朵竴涓瓧绗︺€?*/
+/* 使用 5x7 字库在备用驱动帧缓冲中绘制一个字符。 */
 static void epd_alt_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
 {
     uint8_t col;
@@ -948,7 +1358,7 @@ static void epd_alt_draw_char(uint16_t x, uint16_t y, char c, uint8_t scale)
     }
 }
 
-/* 浣跨敤 5x7 瀛楀簱鍦ㄥ鐢ㄩ┍鍔ㄥ抚缂撳啿涓粯鍒跺瓧绗︿覆銆?*/
+/* 使用 5x7 字库在备用驱动帧缓冲中绘制字符串。 */
 static void epd_alt_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t scale)
 {
     uint16_t cursor;
@@ -962,168 +1372,7 @@ static void epd_alt_draw_string(uint16_t x, uint16_t y, const char *s, uint8_t s
     }
 }
 
-/* 在内置设置页字形表中查找指定 Unicode 码点。 */
-static const uint8_t *epd_find_ui_glyph(uint16_t codepoint)
-{
-    uint8_t i;
-
-    for (i = 0; i < (uint8_t)EPD_ARRAY_COUNT(epd_ui_glyphs); i++) {
-        if (epd_ui_glyphs[i].codepoint == codepoint) {
-            return epd_ui_glyphs[i].bitmap;
-        }
-    }
-    return 0;
-}
-
-/* 使用 SSD1673 坐标系绘制一个内置中文 UI 字形。 */
-static void epd_draw_ui_glyph(uint16_t x, uint16_t y, uint16_t codepoint)
-{
-    const uint8_t *bitmap;
-    uint16_t py;
-
-    bitmap = epd_find_ui_glyph(codepoint);
-    if (bitmap == 0) {
-        epd_draw_char(x, y, '?', 1);
-        return;
-    }
-    for (py = 0; py < EPD_UI_GLYPH_H; py++) {
-        epd_draw_1bpp_row(EPD_UI_GLYPH_W,
-                          &bitmap[py * EPD_UI_GLYPH_STRIDE],
-                          py,
-                          (int16_t)x,
-                          (int16_t)y,
-                          1);
-    }
-}
-
-/* 使用备用屏坐标系绘制一个内置中文 UI 字形。 */
-static void epd_alt_draw_ui_glyph(uint16_t x, uint16_t y, uint16_t codepoint)
-{
-    const uint8_t *bitmap;
-    uint16_t py;
-
-    bitmap = epd_find_ui_glyph(codepoint);
-    if (bitmap == 0) {
-        epd_alt_draw_char(x, y, '?', 1);
-        return;
-    }
-    for (py = 0; py < EPD_UI_GLYPH_H; py++) {
-        epd_alt_draw_1bpp_row(EPD_UI_GLYPH_W,
-                              &bitmap[py * EPD_UI_GLYPH_STRIDE],
-                              py,
-                              (int16_t)x,
-                              (int16_t)y,
-                              1);
-    }
-}
-
-/* 绘制一段由 Unicode 码点数组表示的中文标签，并返回下一绘制位置。 */
-static uint16_t epd_draw_ui_label(uint16_t x, uint16_t y, const uint16_t *label, uint8_t len)
-{
-    uint8_t i;
-    uint16_t cursor;
-
-    cursor = x;
-    for (i = 0; i < len; i++) {
-        epd_draw_ui_glyph(cursor, y, label[i]);
-        cursor = (uint16_t)(cursor + EPD_UI_GLYPH_W);
-    }
-    return cursor;
-}
-
-/* 在备用屏上绘制中文标签，并返回下一绘制位置。 */
-static uint16_t epd_alt_draw_ui_label(uint16_t x, uint16_t y, const uint16_t *label, uint8_t len)
-{
-    uint8_t i;
-    uint16_t cursor;
-
-    cursor = x;
-    for (i = 0; i < len; i++) {
-        epd_alt_draw_ui_glyph(cursor, y, label[i]);
-        cursor = (uint16_t)(cursor + EPD_UI_GLYPH_W);
-    }
-    return cursor;
-}
-
-/* 计算 5x7 ASCII 字符串在指定缩放下占用的像素宽度。 */
-static uint16_t epd_ascii_width(const char *s, uint8_t scale)
-{
-    uint16_t width;
-
-    width = 0;
-    while (*s) {
-        width = (uint16_t)(width + 6u * scale);
-        s++;
-    }
-    return width;
-}
-
-/* 按设置项生成右侧数值文本。 */
-static void setting_to_value(uint8_t item, char *value)
-{
-    char *p;
-
-    p = value;
-    switch (item) {
-    case 0:
-        (void)append_u16(p, app_sample_interval());
-        break;
-    case 1:
-        (void)append_t10(p, app_threshold_t10());
-        break;
-    case 2:
-        (void)append_u16(p, app_storage_limit());
-        break;
-    case 3:
-        (void)append_u16(p, app_alarm_duration_seconds());
-        break;
-    default:
-        (void)append_u16(p, app_hourglass_seconds());
-        break;
-    }
-}
-
-/* 在 SSD1673 设置页中绘制一行中文设置项。 */
-static void epd_draw_settings_row(uint8_t item, uint8_t selected, uint8_t editing, uint16_t y)
-{
-    char value[12];
-    const EpdSettingRow *row;
-    uint16_t unit_x;
-
-    row = &epd_setting_rows[item];
-    if (selected) {
-        epd_draw_ui_glyph(0, y, editing ? 0x6539u : 0x9009u);
-    }
-    (void)epd_draw_ui_label(20, y, row->label, row->label_len);
-    setting_to_value(item, value);
-    epd_draw_string(112, (uint16_t)(y + 2u), value, 2);
-    if (row->unit != 0) {
-        unit_x = (uint16_t)(112u + epd_ascii_width(value, 2) + 4u);
-        epd_draw_ui_glyph(unit_x, y, row->unit);
-    }
-}
-
-/* 在备用屏设置页中绘制一行中文设置项。 */
-static void epd_alt_draw_settings_row(uint8_t item, uint8_t selected, uint8_t editing, uint16_t y)
-{
-    char value[12];
-    const EpdSettingRow *row;
-    uint16_t unit_x;
-
-    row = &epd_setting_rows[item];
-    if (selected) {
-        epd_alt_draw_ui_glyph(0, y, editing ? 0x6539u : 0x9009u);
-    }
-    (void)epd_alt_draw_ui_label(18, y, row->label, row->label_len);
-    setting_to_value(item, value);
-    epd_alt_draw_string(96, (uint16_t)(y + 5u), value, 1);
-    if (row->unit != 0) {
-        unit_x = (uint16_t)(96u + epd_ascii_width(value, 1) + 3u);
-        epd_alt_draw_ui_glyph(unit_x, y, row->unit);
-    }
-}
-
-/* 鍦?SSD1673 甯х紦鍐蹭腑缁樺埗涓€涓槄璇婚〉鐮佺偣銆?*/
+/* 在 SSD1673 帧缓冲中绘制一个阅读页码点。 */
 static void epd_draw_text_item(const TextReaderItem *item)
 {
     AppGlyphInfo info;
@@ -1145,7 +1394,7 @@ static void epd_draw_text_item(const TextReaderItem *item)
     }
 }
 
-/* 鍦ㄥ鐢ㄩ┍鍔ㄥ抚缂撳啿涓粯鍒朵竴涓槄璇婚〉鐮佺偣銆?*/
+/* 在备用驱动帧缓冲中绘制一个阅读页码点。 */
 static void epd_alt_draw_text_item(const TextReaderItem *item)
 {
     AppGlyphInfo info;
@@ -1167,7 +1416,7 @@ static void epd_alt_draw_text_item(const TextReaderItem *item)
     }
 }
 
-/* 浣跨敤 SSD1673 娓叉煋鏂囨湰闃呰椤点€?*/
+/* 使用 SSD1673 渲染文本阅读页。 */
 static void epd_show_text_page(void)
 {
     TextReaderPage page;
@@ -1190,7 +1439,7 @@ static void epd_show_text_page(void)
     epd_flush_partial();
 }
 
-/* 浣跨敤澶囩敤椹卞姩娓叉煋鏂囨湰闃呰椤点€?*/
+/* 使用备用驱动渲染文本阅读页。 */
 static void epd_alt_show_text_page(void)
 {
     TextReaderPage page;
@@ -1213,7 +1462,7 @@ static void epd_alt_show_text_page(void)
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
-/* 灏嗘俯搴︽牱鏈浆鎹负涓荤晫闈㈡樉绀虹敤鐨勫洓琛屾枃鏈€?*/
+/* 将温度样本转换为主界面显示用的四行文本。 */
 static void sample_to_lines(const TempSample *s, char line[4][24])
 {
     char *p;
@@ -1239,84 +1488,132 @@ static void sample_to_lines(const TempSample *s, char line[4][24])
     (void)append_str(p, " C");
 }
 
-/* 灏嗕竴涓缃」杞崲涓鸿缃〉闈㈡樉绀烘枃鏈€?*/
-/* 浣跨敤澶囩敤椹卞姩娓叉煋璁剧疆椤甸潰骞跺埛鏂板埌灞忓箷銆?*/
+/* 拼接主界面底部的采集状态行：采样间隔、序号和运行/停止状态。 */
+static void epd_status_line(char *line)
+{
+    char *p;
+
+    p = line;
+    p = append_str(p, "INT ");
+    p = append_u16(p, app_sample_interval());
+    p = append_str(p, "s SEQ ");
+    p = append_u16(p, flash_next_seq());
+    p = append_str(p, app_collection_running() ? " RUN" : " STOP");
+    *p = 0;
+}
+
+/* 将一个设置项转换为设置页面显示文本。 */
+static void setting_to_line(uint8_t item, uint8_t selected, uint8_t editing, char *line)
+{
+    char *p;
+
+    p = line;
+    if (selected) {
+        *p++ = editing ? '*' : '>';
+    } else {
+        *p++ = ' ';
+    }
+    *p++ = ' ';
+
+    switch (item) {
+    case 0:
+        p = append_str(p, "SAMPLE ");
+        p = append_u16(p, app_sample_interval());
+        (void)append_str(p, "s");
+        break;
+    case 1:
+        p = append_str(p, "ALM TEMP ");
+        p = append_t10(p, app_threshold_t10());
+        (void)append_str(p, "C");
+        break;
+    case 2:
+        p = append_str(p, "STORE ");
+        (void)append_u16(p, app_storage_limit());
+        break;
+    case 3:
+        p = append_str(p, "ALM TIME ");
+        p = append_u16(p, app_alarm_duration_seconds());
+        (void)append_str(p, "s");
+        break;
+    default:
+        p = append_str(p, "HOURGLASS ");
+        p = append_u16(p, app_hourglass_seconds());
+        (void)append_str(p, "s");
+        break;
+    }
+}
+
+/* 使用备用驱动渲染设置页面并刷新到屏幕。 */
 static void epd_alt_show_settings(void)
 {
     uint8_t i;
+    char line[28];
 
     epd_alt_clear_buffer();
-    (void)epd_alt_draw_ui_label(0, 0, epd_label_settings, (uint8_t)EPD_ARRAY_COUNT(epd_label_settings));
+    epd_alt_draw_string(0, 0, "SETTINGS", 2);
     for (i = 0; i < EPD_SETTINGS_ROWS; i++) {
-        epd_alt_draw_settings_row(i,
-                                  (uint8_t)(i == g_epd_settings_selected),
-                                  g_epd_settings_editing,
-                                  (uint16_t)(24u + i * 22u));
+        setting_to_line(i, (uint8_t)(i == g_epd_settings_selected), g_epd_settings_editing, line);
+        epd_alt_draw_string(0, (uint16_t)(24u + i * 18u), line, 1);
     }
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
-/* 浣跨敤 SSD1673 娓叉煋璁剧疆椤甸潰骞跺眬閮ㄥ埛鏂板埌灞忓箷銆?*/
+/* 使用 SSD1673 渲染设置页面并局部刷新到屏幕。 */
 static void epd_show_settings(void)
 {
     uint8_t i;
+    char line[28];
 
     epd_clear_buffer();
-    (void)epd_draw_ui_label(0, 0, epd_label_settings, (uint8_t)EPD_ARRAY_COUNT(epd_label_settings));
+    epd_draw_string(0, 0, "SETTINGS", 2);
     for (i = 0; i < EPD_SETTINGS_ROWS; i++) {
-        epd_draw_settings_row(i,
-                              (uint8_t)(i == g_epd_settings_selected),
-                              g_epd_settings_editing,
-                              (uint16_t)(22u + i * 20u));
+        setting_to_line(i, (uint8_t)(i == g_epd_settings_selected), g_epd_settings_editing, line);
+        epd_draw_string(0, (uint16_t)(24u + i * 19u), line, 2);
     }
     epd_flush_partial();
 }
 
-/* 浣跨敤澶囩敤椹卞姩娓叉煋褰撳墠娓╁害涓荤晫闈€?*/
+/* 使用备用驱动渲染当前温度主界面。 */
 static void epd_alt_show_current(const TempSample *s)
 {
     char lines[4][24];
+    char status[32];
     uint8_t i;
 
     sample_to_lines(s, lines);
+    epd_status_line(status);
     epd_alt_clear_buffer();
     epd_alt_draw_string(0, 0, "TEMP LOGGER", 2);
     for (i = 0; i < 4u; i++) {
         epd_alt_draw_string(0, (uint16_t)(22u + i * 18u), lines[i], 2);
     }
+    epd_alt_draw_string(0, 96, status, 1);
     epd_alt_draw_hourglass();
     epd_alt_draw_zheng_glyph(EPD_ALT_ZHENG_X, EPD_ALT_ZHENG_Y);
-    if (sample_over_threshold(s)) {
-        epd_alt_draw_string(92, 124, "ALM 1", 2);
-    } else {
-        epd_alt_draw_string(92, 124, "ALM 0", 2);
-    }
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
-/* 浣跨敤 SSD1673 娓叉煋褰撳墠娓╁害涓荤晫闈€?*/
+/* 使用 SSD1673 渲染当前温度主界面。 */
 static void epd_show_current(const TempSample *s)
 {
     char lines[4][24];
+    char status[32];
     uint8_t i;
 
     sample_to_lines(s, lines);
+    epd_status_line(status);
     epd_clear_buffer();
     epd_draw_string(0, 0, "TEMP LOGGER", 2);
     for (i = 0; i < 4u; i++) {
         epd_draw_string(0, (uint16_t)(22u + i * 18u), lines[i], 2);
     }
-    if (sample_over_threshold(s)) {
-        epd_draw_string(154, 104, "ALM 1", 2);
-    } else {
-        epd_draw_string(154, 104, "ALM 0", 2);
-    }
+    epd_draw_string(0, 96, status, 1);
     epd_draw_hourglass();
     epd_draw_zheng_glyph(EPD_ZHENG_X, EPD_ZHENG_Y);
     epd_flush_partial();
 }
 
-/* 浣跨敤 SSD1673 娓叉煋鍏ㄥ睆 GIF 鍔ㄧ敾褰撳墠甯с€?*/
+/* 使用 SSD1673 渲染全屏 GIF 动画当前帧。 */
 static void epd_show_gif(void)
 {
     epd_clear_buffer();
@@ -1346,7 +1643,7 @@ void epd_show_current_auto(const TempSample *s)
     epd_request_render(1);
 }
 
-/* 灏?Flash 鍘嗗彶璁板綍杞崲鎴愪竴琛岀畝鐭枃鏈€?*/
+/* 将 Flash 历史记录转换成一行简短文本。 */
 static void record_to_line(const TempRecord *r, char *line)
 {
     char *p;
@@ -1362,19 +1659,19 @@ static void record_to_line(const TempRecord *r, char *line)
     (void)append_t10(p, r->tmp_local_t10);
 }
 
-/* 鏍规嵁鍘嗗彶椤佃捣鐐瑰拰琛屽彿璁＄畻瀹為檯璁板綍涓嬫爣锛屾敮鎸佸惊鐜粴鍔ㄣ€?*/
+/* 根据历史页起点和行号计算实际记录下标，支持循环滚动。 */
 static uint16_t history_row_index(uint16_t start, uint8_t row, uint16_t count)
 {
     uint16_t index;
 
     index = (uint16_t)(start + row);
-    if (index >= count && count > HISTORY_PAGE_ROWS) {
+    if (index >= count && count > HISTORY_ROWS_ON_EPD) {
         index = (uint16_t)(index - count);
     }
     return index;
 }
 
-/* 鐢熸垚鍘嗗彶椤甸潰椤堕儴鐨勮褰曚綅缃拰鑷姩鎾斁鐘舵€佹枃鏈€?*/
+/* 生成历史页面顶部的记录位置和自动播放状态文本。 */
 static void history_meta_line(uint16_t start, uint16_t count, char *line)
 {
     char *p;
@@ -1390,7 +1687,7 @@ static void history_meta_line(uint16_t start, uint16_t count, char *line)
     (void)append_str(p, " AUTO");
 }
 
-/* 浣跨敤澶囩敤椹卞姩娓叉煋鍘嗗彶璁板綍椤甸潰銆?*/
+/* 使用备用驱动渲染历史记录页面。 */
 static void epd_alt_show_history(uint16_t start)
 {
     uint16_t count;
@@ -1403,7 +1700,7 @@ static void epd_alt_show_history(uint16_t start)
     if (start >= count && count > 0) {
         start = 0;
     }
-    if (count <= HISTORY_PAGE_ROWS) {
+    if (count <= HISTORY_ROWS_ON_EPD) {
         start = 0;
     }
 
@@ -1418,7 +1715,7 @@ static void epd_alt_show_history(uint16_t start)
         return;
     }
 
-    for (row = 0; row < HISTORY_PAGE_ROWS; row++) {
+    for (row = 0; row < HISTORY_ROWS_ON_EPD; row++) {
         index = history_row_index(start, row, count);
         if (index < count && history_get(index, &r)) {
             record_to_line(&r, line);
@@ -1429,7 +1726,7 @@ static void epd_alt_show_history(uint16_t start)
     (void)epd_alt_write_buffer_to_screen(epd_buf);
 }
 
-/* 浣跨敤 SSD1673 娓叉煋鍘嗗彶璁板綍椤甸潰銆?*/
+/* 使用 SSD1673 渲染历史记录页面。 */
 static void epd_show_history(uint16_t start)
 {
     uint16_t count;
@@ -1442,7 +1739,7 @@ static void epd_show_history(uint16_t start)
     if (start >= count && count > 0) {
         start = 0;
     }
-    if (count <= HISTORY_PAGE_ROWS) {
+    if (count <= HISTORY_ROWS_ON_EPD) {
         start = 0;
     }
 
@@ -1457,7 +1754,7 @@ static void epd_show_history(uint16_t start)
         return;
     }
 
-    for (row = 0; row < HISTORY_PAGE_ROWS; row++) {
+    for (row = 0; row < HISTORY_ROWS_ON_EPD; row++) {
         index = history_row_index(start, row, count);
         if (index < count && history_get(index, &r)) {
             record_to_line(&r, line);

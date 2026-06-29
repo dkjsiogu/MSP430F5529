@@ -7,6 +7,7 @@ extern "C" {
 #include "board.h"
 #include "epaper.h"
 #include "flash_log.h"
+#include "format.h"
 #include "input.h"
 #include "interaction.h"
 #include "sensors.h"

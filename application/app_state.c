@@ -11,6 +11,7 @@ static int16_t g_threshold_t10 = ALERT_THRESHOLD_T10;
 static uint16_t g_storage_limit = STORAGE_LIMIT_DEFAULT;
 static uint8_t g_settings_save_pending = 0;
 static uint16_t g_settings_save_request_tick = 0;
+static uint8_t g_collection_running = 1;                    /* 采集运行状态：上电默认运行，S1 启动 / S2 停止。 */
 
 /* 将设置值限制在应用允许范围内，避免写入越界配置。 */
 static long clamp_long(long value, long min_value, long max_value)
@@ -217,4 +218,14 @@ uint8_t sample_over_threshold(const TempSample *s)
         return 1;
     }
     return 0;
+}
+
+uint8_t app_collection_running(void)
+{
+    return g_collection_running;
+}
+
+void app_set_collection_running(uint8_t running)
+{
+    g_collection_running = running ? 1u : 0u;
 }

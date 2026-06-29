@@ -42,6 +42,9 @@ int main()
     app_resources_init();
     epd_init();
     sample_timer_init();
+    adc_dma_init();
+
+    uart_write_str("\r\nTEMP LOGGER BOOT\r\n");
 
     control_thread.create("ctrl", application::tasks::control);
     sample_thread.create("sample", application::tasks::sample);

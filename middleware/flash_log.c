@@ -223,6 +223,11 @@ uint16_t history_count(void)
     return limit;
 }
 
+uint16_t flash_next_seq(void)
+{
+    return g_next_seq;
+}
+
 uint8_t history_get(uint16_t index, TempRecord *out)
 {
     const TempRecord *r;

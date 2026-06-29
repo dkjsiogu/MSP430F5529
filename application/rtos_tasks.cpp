@@ -122,6 +122,32 @@ static uint8_t flash_erase_take(void)
     return pending;
 }
 
+static char *append_sample_t10(char *p, int16_t t10, uint16_t flags, uint16_t valid_flag)
+{
+    if ((flags & valid_flag) == 0 || t10 == INVALID_T10) {
+        return append_str(p, "--.-");
+    }
+    return append_t10(p, t10);
+}
+
+static void serial_report_sample(const TempSample *sample)
+{
+    char line[72];
+    char *p;
+
+    p = line;
+    p = append_str(p, "TEMP DIE=");
+    p = append_sample_t10(p, sample->die_t10, sample->flags, FLAG_DIE_OK);
+    p = append_str(p, "C NTC=");
+    p = append_sample_t10(p, sample->ntc_t10, sample->flags, FLAG_NTC_OK);
+    p = append_str(p, "C TMP=");
+    p = append_sample_t10(p, sample->tmp_local_t10, sample->flags, FLAG_TMP_LOCAL_OK);
+    p = append_str(p, "C\r\n");
+    *p = 0;
+
+    uart_write_str(line);
+}
+
 /* 设置 Flash 擦除请求，并唤醒 Flash 任务执行耗时操作。 */
 static void flash_erase_request(void)
 {
@@ -183,12 +209,13 @@ void control(void *argument)
 void sample(void *argument)
 {
     TempSample sample;
+    TempSample batch_sample;
     uint8_t due_flags;
 
     (void)argument;
     for (;;) {
         due_flags = sample_timer_take_due();
-        if (sample_due_should_collect(due_flags)) {
+        if (sample_due_should_collect(due_flags) && app_collection_running()) {
             collect_sample(&sample);
             latest_sample_store(&sample);
             board_toggle_heartbeat();
@@ -203,8 +230,11 @@ void sample(void *argument)
                 epd_show_current_auto(&sample);
                 notify(g_notifications.display);
             }
+        }
 
-            flash_log_request(&sample);
+        /* Flash 历史记录改由 ADC12+DMA 管线每 5 轮批量驱动，降低 Flash 写入频率。 */
+        if (app_collection_running() && adc_dma_batch_take(&batch_sample)) {
+            flash_log_request(&batch_sample);
         }
 
         (void)ulTaskNotifyTake(pdTRUE, rtos_ticks_from_ms(SAMPLE_WAIT_MS));
@@ -233,6 +263,7 @@ void flash(void *argument)
         }
         if (flash_log_take(&sample)) {
             flash_log_sample(&sample);
+            serial_report_sample(&sample);
         }
         app_state_task();
 
